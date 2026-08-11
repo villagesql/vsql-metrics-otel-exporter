@@ -1,0 +1,19 @@
+# Install extension
+INSTALL EXTENSION vsql_extension_template;
+
+--echo #
+--echo # Test basic hello_world function
+--echo #
+
+# Test hello_world function returns correct string
+SELECT vsql_extension_template.hello_world() AS result;
+
+# Test hello_world returns expected value
+SELECT vsql_extension_template.hello_world() = 'Hello, World!' AS test_result;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+# Uninstall extension
+UNINSTALL EXTENSION vsql_extension_template;

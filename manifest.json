@@ -1,0 +1,7 @@
+{
+  "name": "vsql_extension_template",
+  "version": "1.0.0",
+  "description": "Template project for creating VillageSQL extensions",
+  "author": "Your Name",
+  "license": "GPL-2.0"
+}
