@@ -57,19 +57,36 @@ bool collect_innodb_cmpmem(CollectorCtx &ctx) {
         {"page_size", std::string(col_str(row, 0))},
         {"buffer_pool", std::string(col_str(row, 1))}};
 
-    // pages_used and pages_free are instantaneous counts, but upstream types
-    // them as counters and names them _total. Kept as-is: changing either would
-    // break the dashboards this exporter exists to serve.
-    ctx.out->counter_i("mysql_info_schema_innodb_cmpmem_pages_used_total",
-                       col_int(row, 2), labels);
-    ctx.out->counter_i("mysql_info_schema_innodb_cmpmem_pages_free_total",
-                       col_int(row, 3), labels);
+    // pages_used and pages_free are point-in-time readings of the buddy
+    // allocator, not counters. The server fills them from buddy_stat->used and
+    // the current free-list length (storage/innobase/handler/i_s.cc:1557-1558)
+    // and labels the columns "Currently in Use" and "Currently Available";
+    // both fall as well as rise as pages are allocated and freed.
+    //
+    // mysqld_exporter types them CounterValue. The _total suffix in the names
+    // is kept -- the name is the compatibility surface, and renaming it would
+    // break every dashboard and alert this exporter exists to keep working --
+    // but the OTLP type is not a compatibility surface, and it is not cosmetic
+    // the way Prometheus's # TYPE is. isMonotonic tells a consumer that a
+    // decrease is a counter reset, so delta conversion re-baselines and invents
+    // a spike every time the allocator frees a page. Emitted as gauges.
+    ctx.out->gauge_i("mysql_info_schema_innodb_cmpmem_pages_used_total",
+                     col_int(row, 2), labels);
+    ctx.out->gauge_i("mysql_info_schema_innodb_cmpmem_pages_free_total",
+                     col_int(row, 3), labels);
+
+    // These two are genuinely cumulative: buddy_stat->relocated and
+    // buddy_stat->relocated_duration (i_s.cc:1559-1563).
     ctx.out->counter_i("mysql_info_schema_innodb_cmpmem_relocation_ops_total",
                        col_int(row, 4), labels);
-    // relocation_time is milliseconds here, unlike innodb_cmp's seconds.
+    // Already seconds. The column is produced by
+    // duration_cast<std::chrono::seconds>(relocated_duration) and the server
+    // labels it "Total Duration of Relocations, in Seconds". mysqld_exporter
+    // divides by 1000, which was right when the column was milliseconds and is
+    // a 1000x under-report against MySQL 8.4. The metric name promises seconds.
     ctx.out->counter_d(
         "mysql_info_schema_innodb_cmpmem_relocation_time_seconds_total",
-        col_real(row, 5) / 1000.0, labels);
+        col_real(row, 5), labels);
   });
 }
 

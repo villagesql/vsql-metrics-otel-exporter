@@ -46,6 +46,18 @@ SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
 1
 1
 #
+# Only values that actually accumulate are framed as monotonic sums. The
+# innodb_cmpmem page counts are point-in-time readings of the buddy
+# allocator that fall as well as rise, so despite their _total names --
+# kept for dashboard compatibility -- they must arrive as gauges, or a
+# consumer would read every freed page as a counter reset. The relocation
+# counters beside them are cumulative and must stay sums.
+# expect: gauge gauge sum sum
+gauge
+gauge
+sum
+sum
+#
 # Protobuf JSON maps 64-bit integers to quoted strings and doubles to bare
 # numbers. Getting either backwards is accepted by some receivers and
 # rejected by others, so both directions are asserted.

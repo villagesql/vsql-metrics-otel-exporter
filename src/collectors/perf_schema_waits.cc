@@ -22,10 +22,29 @@
 namespace vsql_metrics {
 
 bool collect_events_waits(CollectorCtx &ctx) {
+  // The summary table carries a row for every wait instrument the server knows
+  // about, enabled or not -- 405 on a stock server, of which only 54 are
+  // enabled. Joining setup_instruments restricts the export to instruments that
+  // can actually accumulate.
+  //
+  // The join runs on every scrape, so the enabled set is resolved fresh each
+  // time: an instrument enabled by UPDATE setup_instruments starts being
+  // exported on the very next tick with no restart and no configuration change
+  // here. Nothing about the instrument list is cached anywhere.
+  //
+  // Deliberately NOT filtered on i.TIMED. ENABLED='YES' with TIMED='NO' is a
+  // real state -- COUNT_STAR still increments while SUM_TIMER_WAIT stays 0 --
+  // so a TIMED filter would drop instruments that are actively firing.
+  //
+  // The idle exclusion is kept from the previous query. 'idle' is an enabled
+  // instrument, so the join alone would start emitting it, and mysqld_exporter
+  // excludes it -- adding it would break the name-for-name parity this exporter
+  // exists to provide.
   constexpr const char kQuery[] =
-      "SELECT EVENT_NAME, COUNT_STAR, SUM_TIMER_WAIT "
-      "FROM performance_schema.events_waits_summary_global_by_event_name "
-      "WHERE EVENT_NAME != 'idle'";
+      "SELECT e.EVENT_NAME, e.COUNT_STAR, e.SUM_TIMER_WAIT "
+      "FROM performance_schema.events_waits_summary_global_by_event_name e "
+      "JOIN performance_schema.setup_instruments i ON i.NAME = e.EVENT_NAME "
+      "WHERE i.ENABLED = 'YES' AND e.EVENT_NAME != 'idle'";
 
   return query_rows(ctx, kQuery, [&](const sq::SqlQuery::Row &row) {
     const std::vector<Label> labels = {

@@ -115,6 +115,16 @@ SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
 --exec sh -c "grep -Eq '\"startTimeUnixNano\":\"[0-9]{19}\"' $recv_body && echo 1 || echo 0; true"
 
 --echo #
+--echo # Only values that actually accumulate are framed as monotonic sums. The
+--echo # innodb_cmpmem page counts are point-in-time readings of the buddy
+--echo # allocator that fall as well as rise, so despite their _total names --
+--echo # kept for dashboard compatibility -- they must arrive as gauges, or a
+--echo # consumer would read every freed page as a counter reset. The relocation
+--echo # counters beside them are cumulative and must stay sums.
+--echo # expect: gauge gauge sum sum
+--exec sh -c "python3 -c \"import json; d=json.load(open('$recv_body')); k={m['name']:('sum' if 'sum' in m else 'gauge') for m in d['resourceMetrics'][0]['scopeMetrics'][0]['metrics']}; p='mysql_info_schema_innodb_cmpmem_'; [print(k.get(p+n,'MISSING')) for n in ('pages_used_total','pages_free_total','relocation_ops_total','relocation_time_seconds_total')]\"; true"
+
+--echo #
 --echo # Protobuf JSON maps 64-bit integers to quoted strings and doubles to bare
 --echo # numbers. Getting either backwards is accepted by some receivers and
 --echo # rejected by others, so both directions are asserted.

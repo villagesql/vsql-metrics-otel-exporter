@@ -110,6 +110,11 @@ Status g_st{};
 // moving it on a re-enable would claim a reset that did not happen.
 std::uint64_t g_process_start_ns = 0;
 
+// Start of the window every cumulative counter in this exporter accumulates
+// over. Read from the server rather than assumed, because it is the server that
+// owns the counters -- see resolve_server_start below.
+std::uint64_t g_server_start_ns = 0;
+
 // Identifies this exporter as the OTLP instrumentation scope. The version is
 // kept in step with manifest.json by hand; it names the producer of the
 // metrics, not the server.
@@ -165,6 +170,28 @@ void log_rate_limited(const std::string &message) {
   std::fprintf(stderr, "[vsql_metrics_otel_exporter] %s\n", message.c_str());
 }
 
+// Resolves when the server started, which is when its counters began
+// accumulating. Read once: the extension is loaded into the server, so the
+// server cannot restart without unloading this code with it -- unlike the
+// instrument list, this value provably cannot change while we run.
+void resolve_server_start(const sq::Session &session, std::uint64_t now_ns) {
+  if (g_server_start_ns != 0) return;
+
+  long long uptime_secs = 0;
+  auto result =
+      session
+          .sql("SELECT VARIABLE_VALUE FROM performance_schema.global_status "
+               "WHERE VARIABLE_NAME = 'Uptime'")
+          .for_each([&uptime_secs](const sq::SqlQuery::Row &row) {
+            uptime_secs = row.column_int(0);
+          });
+  if (result.has_error() || uptime_secs <= 0) return;
+
+  const std::uint64_t uptime_ns =
+      static_cast<std::uint64_t>(uptime_secs) * 1000000000ull;
+  g_server_start_ns = (now_ns > uptime_ns) ? now_ns - uptime_ns : 0;
+}
+
 void export_batch(const MetricBatch &batch, std::uint64_t now_ns) {
   const std::string endpoint = cfg_str("otlp_endpoint");
   if (endpoint.empty()) {
@@ -193,8 +220,12 @@ void export_batch(const MetricBatch &batch, std::uint64_t now_ns) {
       static_cast<std::size_t>(cfg_int(g_cfg.max_datapoints_per_request));
   opt.max_body_bytes = static_cast<std::size_t>(cfg_int(g_cfg.max_body_bytes));
 
+  // Falls back to process start only if the server never answered, which would
+  // mean the scrape failed anyway.
+  const std::uint64_t start_ns =
+      (g_server_start_ns != 0) ? g_server_start_ns : g_process_start_ns;
   const std::vector<std::string> bodies =
-      otlp_json::serialize(batch, now_ns, g_process_start_ns, opt);
+      otlp_json::serialize(batch, now_ns, start_ns, opt);
   store(g_st.chunks_last_export, static_cast<long long>(bodies.size()));
   if (bodies.empty()) return;
 
@@ -251,6 +282,7 @@ void run_tick(struct vef_thread_handle_t *handle) {
     log_rate_limited("could not open a SQL session for the scrape");
   } else {
     batch.gauge_i("mysql_up", 1);
+    resolve_server_start(session, now_ns);
 
     for (int i = 0; i < kCollectorCount; ++i) {
       if (!g_collect[i]) continue;

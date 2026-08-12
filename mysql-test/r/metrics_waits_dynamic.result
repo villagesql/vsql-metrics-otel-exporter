@@ -1,0 +1,48 @@
+# Both instruments exist on this server (1 = present).
+switched_exists
+1
+stays_off_exists
+1
+#
+# Starting from both disabled.
+ENABLED
+NO
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+#
+# Wait events are being exported (1), but neither disabled instrument is
+# among them -- checked per metric, so 0 0 0 0.
+1
+0
+0
+0
+0
+#
+# Enable one instrument through the server. The exporter is not touched:
+# no restart, no reinstall, no configuration change beyond the marker that
+# routes the next body to a second file.
+# The worker never stopped:
+SELECT VARIABLE_VALUE AS still_enabled FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+still_enabled
+ON
+#
+# The newly enabled instrument is now exported on both metrics (1, 1),
+# while the one still disabled remains absent (0, 0) -- so the enabled set
+# is resolved per scrape, not emitted wholesale.
+1
+1
+0
+0
+#
+# The exported wait series match the server's enabled set exactly, whatever
+# that set happens to be here (1 = counts agree).
+1
+#
+# Every cumulative point carries a start timestamp, and the series that
+# just appeared carries the same one as the pre-existing series: these
+# counters all accumulate over a single window, the server's uptime
+# (1 = exactly one distinct start timestamp in the body).
+1
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

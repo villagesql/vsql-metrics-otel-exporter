@@ -1,0 +1,195 @@
+# The wait-event collector resolves the set of enabled instruments on every
+# scrape, so enabling an instrument at runtime starts exporting it on the next
+# tick.
+#
+# The worker is switched on once at the start and left running for the whole
+# test. Nothing here restarts it, reinstalls the extension, or changes any of
+# its configuration -- the only thing that changes between the two captured
+# exports is one instrument's ENABLED flag, set through the server.
+#
+# Two instruments are used, and both are forced to a known state first rather
+# than assumed: which instruments are enabled by default differs between a stock
+# server and this test environment. One is enabled mid-test; the other is left
+# disabled throughout, so its continued absence shows the filter is actually
+# filtering and not just emitting everything. Both are restored at the end.
+
+--source include/not_windows.inc
+
+--let $switched = wait/synch/mutex/sql/LOCK_plugin
+--let $stays_off = wait/io/file/sql/binlog
+
+--let $recv_port = 14404
+--let $body_before = $MYSQLTEST_VARDIR/tmp/otlp_waits_before.json
+--let $body_after = $MYSQLTEST_VARDIR/tmp/otlp_waits_after.json
+--let $recv_py = $MYSQLTEST_VARDIR/tmp/otlp_waits_recv.py
+
+--error 0,1
+--remove_file $body_before
+--error 0,1
+--remove_file $body_after
+
+# Routes each captured body to a file chosen by the marker it carries, so the
+# two exports can be told apart without ever stopping the worker.
+--write_file $recv_py
+import http.server, sys, time
+port = int(sys.argv[1])
+targets = {sys.argv[2]: sys.argv[3], sys.argv[4]: sys.argv[5]}
+deadline = time.time() + 60
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        data = self.rfile.read(n)
+        for marker, path in targets.items():
+            if marker.encode() in data:
+                with open(path, 'wb') as f:
+                    f.write(data)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'{}')
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(('127.0.0.1', port), H)
+srv.timeout = 0.5
+while time.time() < deadline:
+    srv.handle_request()
+EOF
+
+--exec_in_background python3 $recv_py $recv_port vsql_waits_before $body_before vsql_waits_after $body_after
+
+# Presence has to be tested on the exact attribute value, not by searching the
+# body text: instrument names are prefixes of one another
+# (wait/io/file/sql/binlog is a prefix of wait/io/file/sql/binlog_cache), so a
+# substring search reports an instrument as present because a sibling of it is.
+--let $probe_py = $MYSQLTEST_VARDIR/tmp/otlp_waits_probe.py
+--write_file $probe_py
+import json, sys
+body, wanted = sys.argv[1], sys.argv[2]
+doc = json.load(open(body))
+metrics = doc['resourceMetrics'][0]['scopeMetrics'][0]['metrics']
+carrying = set()
+for m in metrics:
+    for dp in m.get('sum', {}).get('dataPoints', []):
+        for attr in dp.get('attributes', []):
+            if attr['key'] == 'event_name' and attr['value']['stringValue'] == wanted:
+                carrying.add(m['name'])
+for metric in sys.argv[3:]:
+    print(1 if metric in carrying else 0)
+EOF
+
+--echo # Both instruments exist on this server (1 = present).
+--disable_query_log
+eval SELECT COUNT(*) AS switched_exists FROM performance_schema.setup_instruments
+  WHERE NAME = '$switched';
+eval SELECT COUNT(*) AS stays_off_exists FROM performance_schema.setup_instruments
+  WHERE NAME = '$stays_off';
+
+# Remember how the server had them configured, so it can be handed back exactly
+# as it was found.
+--let $orig_switched_enabled = `SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = '$switched'`
+--let $orig_switched_timed = `SELECT TIMED FROM performance_schema.setup_instruments WHERE NAME = '$switched'`
+--let $orig_stays_off_enabled = `SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = '$stays_off'`
+--let $orig_stays_off_timed = `SELECT TIMED FROM performance_schema.setup_instruments WHERE NAME = '$stays_off'`
+
+eval UPDATE performance_schema.setup_instruments SET ENABLED = 'NO'
+  WHERE NAME IN ('$switched', '$stays_off');
+--enable_query_log
+
+--echo #
+--echo # Starting from both disabled.
+--disable_query_log
+eval SELECT ENABLED FROM performance_schema.setup_instruments WHERE NAME = '$switched';
+--enable_query_log
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $recv_port RECV_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:$recv_port';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
+SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 1000000;
+SET GLOBAL vsql_metrics_otel_exporter.collect_perf_schema_eventswaits = ON;
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_waits_before';
+--enable_query_log
+
+# Switched on once. It stays on until the assertions are done.
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_before' ] && break; sleep 0.25; done; true"
+
+--echo #
+--echo # Wait events are being exported (1), but neither disabled instrument is
+--echo # among them -- checked per metric, so 0 0 0 0.
+--exec sh -c "grep -c '\"name\":\"mysql_perf_schema_events_waits_total\"' $body_before; true"
+--exec python3 $probe_py $body_before $switched mysql_perf_schema_events_waits_total mysql_perf_schema_events_waits_seconds_total
+--exec python3 $probe_py $body_before $stays_off mysql_perf_schema_events_waits_total mysql_perf_schema_events_waits_seconds_total
+
+--echo #
+--echo # Enable one instrument through the server. The exporter is not touched:
+--echo # no restart, no reinstall, no configuration change beyond the marker that
+--echo # routes the next body to a second file.
+--disable_query_log
+eval UPDATE performance_schema.setup_instruments SET ENABLED = 'YES'
+  WHERE NAME = '$switched';
+--let $exports_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'`
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_waits_after';
+--enable_query_log
+
+--echo # The worker never stopped:
+SELECT VARIABLE_VALUE AS still_enabled FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+
+# Waits for an export made after the instrument was enabled, not for one the
+# section above already counted.
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > $exports_before FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_after' ] && break; sleep 0.25; done; true"
+
+--echo #
+--echo # The newly enabled instrument is now exported on both metrics (1, 1),
+--echo # while the one still disabled remains absent (0, 0) -- so the enabled set
+--echo # is resolved per scrape, not emitted wholesale.
+--exec python3 $probe_py $body_after $switched mysql_perf_schema_events_waits_total mysql_perf_schema_events_waits_seconds_total
+--exec python3 $probe_py $body_after $stays_off mysql_perf_schema_events_waits_total mysql_perf_schema_events_waits_seconds_total
+
+--echo #
+--echo # The exported wait series match the server's enabled set exactly, whatever
+--echo # that set happens to be here (1 = counts agree).
+--disable_query_log
+--let $enabled_waits = `SELECT COUNT(*) FROM performance_schema.events_waits_summary_global_by_event_name e JOIN performance_schema.setup_instruments i ON i.NAME = e.EVENT_NAME WHERE i.ENABLED = 'YES' AND e.EVENT_NAME != 'idle'`
+--enable_query_log
+--exec sh -c "python3 -c \"import json; d=json.load(open('$body_after')); ms=d['resourceMetrics'][0]['scopeMetrics'][0]['metrics']; n=sum(len(m['sum']['dataPoints']) for m in ms if m['name']=='mysql_perf_schema_events_waits_total'); print(1 if n == $enabled_waits else 0)\"; true"
+
+--echo #
+--echo # Every cumulative point carries a start timestamp, and the series that
+--echo # just appeared carries the same one as the pre-existing series: these
+--echo # counters all accumulate over a single window, the server's uptime
+--echo # (1 = exactly one distinct start timestamp in the body).
+--exec sh -c "grep -Eo '\"startTimeUnixNano\":\"[0-9]+\"' $body_after | sort -u | wc -l | tr -d ' '; true"
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+# Hand the instruments back exactly as they were found.
+--disable_query_log
+eval UPDATE performance_schema.setup_instruments
+  SET ENABLED = '$orig_switched_enabled', TIMED = '$orig_switched_timed'
+  WHERE NAME = '$switched';
+eval UPDATE performance_schema.setup_instruments
+  SET ENABLED = '$orig_stays_off_enabled', TIMED = '$orig_stays_off_timed'
+  WHERE NAME = '$stays_off';
+--enable_query_log
+
+--remove_file $recv_py
+--remove_file $probe_py
+--error 0,1
+--remove_file $body_before
+--error 0,1
+--remove_file $body_after
