@@ -1,7 +1,7 @@
 {
-  "name": "vsql_extension_template",
-  "version": "1.0.0",
-  "description": "Template project for creating VillageSQL extensions",
-  "author": "Your Name",
+  "name": "vsql_metrics_otel_exporter",
+  "version": "0.0.1",
+  "description": "Server metrics with mysqld_exporter naming, pushed as OpenTelemetry metrics over OTLP/HTTP",
+  "author": "VillageSQL Contributors",
   "license": "GPL-2.0"
 }

@@ -1,0 +1,116 @@
+# Each collector's enable variable actually controls whether that collector
+# contributes to the export.
+#
+# Two exports are captured under different service names, so the second one
+# cannot be confused with a body left over from the first.
+#
+# perf_schema.eventswaits is the collector under test because it has hundreds of
+# rows on any server with performance_schema on. info_schema.tables would be a
+# false negative here: it excludes the system schemas, and a stock server has no
+# user schemas at all, so it correctly produces nothing whether on or off.
+
+--source include/not_windows.inc
+
+--let $recv_port = 14402
+--let $body_one = $MYSQLTEST_VARDIR/tmp/otlp_collectors_one.json
+--let $body_two = $MYSQLTEST_VARDIR/tmp/otlp_collectors_two.json
+--let $recv_py = $MYSQLTEST_VARDIR/tmp/otlp_collectors_recv.py
+
+--error 0,1
+--remove_file $body_one
+--error 0,1
+--remove_file $body_two
+
+# Routes a captured body to a file chosen by the marker it carries, so both
+# phases can be served by one receiver.
+--write_file $recv_py
+import http.server, sys, time
+port = int(sys.argv[1])
+targets = {sys.argv[2]: sys.argv[3], sys.argv[4]: sys.argv[5]}
+deadline = time.time() + 60
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        data = self.rfile.read(n)
+        for marker, path in targets.items():
+            if marker.encode() in data:
+                with open(path, 'wb') as f:
+                    f.write(data)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'{}')
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(('127.0.0.1', port), H)
+srv.timeout = 0.5
+while time.time() < deadline:
+    srv.handle_request()
+EOF
+
+--exec_in_background python3 $recv_py $recv_port vsql_marker_default $body_one vsql_marker_waits $body_two
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $recv_port RECV_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:$recv_port';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
+SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 1000000;
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_marker_default';
+--enable_query_log
+
+--echo # With the stock configuration, wait-event collection is off.
+SELECT VARIABLE_VALUE AS eventswaits_default
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_perf_schema_eventswaits';
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_one' ] && break; sleep 0.25; done; true"
+
+--echo # Always-on collectors are present (1), wait events are not (0).
+--exec sh -c "grep -c '\"name\":\"mysql_global_status_commands_total\"' $body_one; true"
+--exec sh -c "grep -c 'mysql_perf_schema_events_waits_total' $body_one; true"
+
+--echo #
+--echo # Now switch wait-event collection on.
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_marker_waits';
+SET GLOBAL vsql_metrics_otel_exporter.collect_perf_schema_eventswaits = ON;
+--enable_query_log
+
+--disable_query_log
+--let $exports_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'`
+--enable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+# Waits for an export made under the new setting, not for the one the section
+# above already counted.
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > $exports_before FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_two' ] && break; sleep 0.25; done; true"
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+--echo # The same collectors as before, plus wait events (1 each).
+--exec sh -c "grep -c '\"name\":\"mysql_global_status_commands_total\"' $body_two; true"
+--exec sh -c "grep -c '\"name\":\"mysql_perf_schema_events_waits_total\"' $body_two; true"
+--exec sh -c "grep -c '\"name\":\"mysql_perf_schema_events_waits_seconds_total\"' $body_two; true"
+
+--echo #
+--echo # Turning a collector on did not break any other collector.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--remove_file $recv_py
+--error 0,1
+--remove_file $body_one
+--error 0,1
+--remove_file $body_two

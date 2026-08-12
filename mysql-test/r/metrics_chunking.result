@@ -1,0 +1,31 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+# The scrape was split into more than one request, and every request was
+# accepted.
+SELECT VARIABLE_VALUE > 1 AS split_into_chunks FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.chunks_last_export';
+split_into_chunks
+1
+SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total';
+no_export_errors
+1
+#
+# The number of requests is exactly what the data-point count requires at
+# 100 points per request, rounded up -- so no data point was dropped and
+# none was sent twice.
+SELECT CEIL(
+(SELECT VARIABLE_VALUE FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_datapoint_count') / 100
+) =
+(SELECT VARIABLE_VALUE FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.chunks_last_export')
+AS chunk_count_exact;
+chunk_count_exact
+1
+#
+# Every chunk is a self-contained OTLP envelope, not a fragment of one
+# (0 = no malformed request reached the collector).
+0
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

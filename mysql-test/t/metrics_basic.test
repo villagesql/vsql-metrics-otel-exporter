@@ -1,0 +1,35 @@
+# Configuration and health-counter surface of the exporter.
+#
+# No network is involved. This is the cheapest signal that a variable was added,
+# removed or renamed, and that installing and uninstalling leaves the server
+# with no residue.
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--echo # Every configuration variable, with the value it defaults to. The
+--echo # collect_* defaults are the ones mysqld_exporter uses for the matching
+--echo # --collect.* flag, so a default install scrapes the same things it does.
+SHOW VARIABLES LIKE 'vsql_metrics_otel_exporter.%';
+
+--echo #
+--echo # Health counters. Failures are classified numerically here because the
+--echo # extension SDK has no string-valued status variable; the corresponding
+--echo # message goes to the server error log.
+SELECT VARIABLE_NAME FROM performance_schema.global_status
+  WHERE VARIABLE_NAME LIKE 'vsql_metrics_otel_exporter.%'
+  ORDER BY VARIABLE_NAME;
+
+--echo #
+--echo # The background worker stays off until it is switched on explicitly.
+SELECT VARIABLE_VALUE AS enabled_by_default
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--echo #
+--echo # Uninstalling removes every variable the extension registered.
+SELECT COUNT(*) AS variables_left FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME LIKE 'vsql_metrics_otel_exporter.%';
+SELECT COUNT(*) AS status_counters_left FROM performance_schema.global_status
+  WHERE VARIABLE_NAME LIKE 'vsql_metrics_otel_exporter.%';

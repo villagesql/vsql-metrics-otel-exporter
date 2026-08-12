@@ -1,0 +1,54 @@
+# Conformance against a real OpenTelemetry Collector.
+#
+# The other tests assert the shape of the body against a receiver that accepts
+# anything. Only a real collector validates it: a malformed OTLP body is
+# rejected with a 400, so export_errors_total staying at zero here is the
+# assertion that the encoding is actually correct.
+#
+# Skipped unless test.sh found a collector running; see TESTING.md.
+
+--source include/not_windows.inc
+
+# Skip before touching any state -- a leftover temp file would trip MTR's
+# check-testcase on the skip path.
+if (!$VSQL_METRICS_OTEL_ENDPOINT) {
+  --skip VSQL_METRICS_OTEL_ENDPOINT not set: skipping live OTLP test
+}
+if (!$VSQL_METRICS_OTEL_OUTFILE) {
+  --skip VSQL_METRICS_OTEL_OUTFILE not set: skipping live OTLP test
+}
+--let $otel_ep = $VSQL_METRICS_OTEL_ENDPOINT
+--let $otel_out = $VSQL_METRICS_OTEL_OUTFILE
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $otel_ep OTEL_ENDPOINT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = '$otel_ep';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 10;
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_metrics_live_marker';
+--enable_query_log
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+
+--echo # The collector validated the body and accepted it. A malformed OTLP
+--echo # payload would have been rejected with a 4xx here.
+SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total';
+SELECT VARIABLE_VALUE = 200 AS accepted FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+--echo #
+--echo # The metrics came out the far side of the collector's own pipeline
+--echo # (1 = found in its exporter output).
+--exec sh -c "for i in \$(seq 1 40); do grep -q vsql_metrics_live_marker '$otel_out' && break; sleep 0.5; done; grep -q vsql_metrics_live_marker '$otel_out' && echo 1 || echo 0; true"
+--exec sh -c "grep -q mysql_global_status_commands_total '$otel_out' && echo 1 || echo 0; true"
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

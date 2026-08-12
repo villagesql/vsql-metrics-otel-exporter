@@ -1,0 +1,160 @@
+# The exported OTLP body: its envelope, the metric names inside it, and the
+# protobuf-JSON encoding rules that a receiver will reject the body for getting
+# wrong.
+#
+# Assertions are deliberately value-free. Metric values change on every scrape,
+# so nothing here counts data points or compares a reading; each check either
+# greps for a fixed string that appears exactly once, or asks the server a
+# yes/no question.
+
+--source include/not_windows.inc
+
+--let $recv_port = 14401
+--let $recv_body = $MYSQLTEST_VARDIR/tmp/otlp_metrics_body.json
+--let $recv_py = $MYSQLTEST_VARDIR/tmp/otlp_metrics_recv.py
+
+--error 0,1
+--remove_file $recv_body
+
+# A stand-in collector. It answers 200 to everything so a scrape that lands
+# while assertions are running cannot register an export error, and it only
+# keeps a body carrying the marker, so the file is the export this test set up
+# rather than whichever one happened to arrive first. mysqltest never reaps
+# background children, so it stops itself on a deadline.
+--write_file $recv_py
+import http.server, sys, time
+port = int(sys.argv[1]); out = sys.argv[2]; marker = sys.argv[3]
+deadline = time.time() + 40
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        data = self.rfile.read(n)
+        if marker.encode() in data:
+            with open(out, 'wb') as f:
+                f.write(data)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'{}')
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(('127.0.0.1', port), H)
+srv.timeout = 0.5
+while time.time() < deadline:
+    srv.handle_request()
+EOF
+
+--exec_in_background python3 $recv_py $recv_port $recv_body vsql_metrics_marker_one
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $recv_port RECV_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:$recv_port';
+# The worker reads its interval at the end of each tick, so an interval set
+# after it starts would not apply until the current sleep expires.
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
+# Force the whole scrape into one request so the envelope counts below are fixed.
+SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 1000000;
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_metrics_marker_one';
+--enable_query_log
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+
+--echo # The collector accepted the export, and no collector failed on the way.
+SELECT VARIABLE_VALUE > 0 AS exported FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total';
+SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total';
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+SELECT VARIABLE_VALUE = 200 AS http_ok FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
+
+# Stop the worker before touching the captured file, so no scrape races the
+# assertions below.
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$recv_body' ] && break; sleep 0.25; done; true"
+
+--echo #
+--echo # Envelope: one resourceMetrics, one scopeMetrics, at least one dataPoints
+--echo # array (1 = present).
+--exec sh -c "grep -c resourceMetrics $recv_body; true"
+--exec sh -c "grep -c scopeMetrics $recv_body; true"
+--exec sh -c "grep -Eq 'dataPoints' $recv_body && echo 1 || echo 0; true"
+
+--echo #
+--echo # Metric names carry mysqld_exporter's spelling exactly, so existing
+--echo # dashboards keep working (1 = present).
+--exec sh -c "grep -c '\"name\":\"mysql_up\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_global_status_commands_total\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_global_status_handlers_total\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_global_status_innodb_row_ops_total\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_global_variables_max_connections\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_info_schema_innodb_cmp_compress_ops_total\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_version_info\"' $recv_body; true"
+--exec sh -c "grep -c '\"name\":\"mysql_exporter_collector_success\"' $recv_body; true"
+
+--echo #
+--echo # Labels are attached where mysqld_exporter attaches them (1 = present).
+--exec sh -c "grep -Eq '\"key\":\"command\"' $recv_body && echo 1 || echo 0; true"
+--exec sh -c "grep -Eq '\"key\":\"page_size\"' $recv_body && echo 1 || echo 0; true"
+--exec sh -c "grep -Eq '\"key\":\"collector\"' $recv_body && echo 1 || echo 0; true"
+
+--echo #
+--echo # Counters are framed as cumulative monotonic sums (1 = present).
+--exec sh -c "grep -Eq '\"aggregationTemporality\":2' $recv_body && echo 1 || echo 0; true"
+--exec sh -c "grep -Eq '\"isMonotonic\":true' $recv_body && echo 1 || echo 0; true"
+--exec sh -c "grep -Eq '\"startTimeUnixNano\":\"[0-9]{19}\"' $recv_body && echo 1 || echo 0; true"
+
+--echo #
+--echo # Protobuf JSON maps 64-bit integers to quoted strings and doubles to bare
+--echo # numbers. Getting either backwards is accepted by some receivers and
+--echo # rejected by others, so both directions are asserted.
+--echo # quoted asInt present (1 = yes):
+--exec sh -c "grep -Eq '\"asInt\":\"[0-9]+\"' $recv_body && echo 1 || echo 0; true"
+--echo # bare asInt absent (0 = none):
+--exec sh -c "grep -Eo '\"asInt\":[0-9]' $recv_body | wc -l | tr -d ' '; true"
+--echo # quoted timeUnixNano present (1 = yes):
+--exec sh -c "grep -Eq '\"timeUnixNano\":\"[0-9]{19}\"' $recv_body && echo 1 || echo 0; true"
+--echo # bare timeUnixNano absent (0 = none):
+--exec sh -c "grep -Eo '\"timeUnixNano\":[0-9]' $recv_body | wc -l | tr -d ' '; true"
+--echo # quoted asDouble absent (0 = none):
+--exec sh -c "grep -Eo '\"asDouble\":\"' $recv_body | wc -l | tr -d ' '; true"
+--echo # no attribute array starts with a stray comma (0 = none):
+--exec sh -c "grep -Eo '\"attributes\":\\[,' $recv_body | wc -l | tr -d ' '; true"
+
+--echo #
+--echo # Status values that carry no number produce no metric at all, rather than
+--echo # a zero or a label. Rsa_public_key is a PEM blob (0 = correctly skipped):
+--exec sh -c "grep -c 'BEGIN PUBLIC KEY' $recv_body; true"
+--exec sh -c "grep -c 'mysql_global_status_rsa_public_key' $recv_body; true"
+
+--echo #
+--echo # An extension's own status variables are named "<extension>.<var>", and a
+--echo # dot is not legal in a metric name. They must arrive sanitised (1), with
+--echo # no dot surviving (0).
+--exec sh -c "grep -c 'mysql_global_status_vsql_metrics_otel_exporter_scrapes_total' $recv_body; true"
+--exec sh -c "grep -Eo 'mysql_global_status_vsql_metrics_otel_exporter\\.' $recv_body | wc -l | tr -d ' '; true"
+
+--echo #
+--echo # Collectors that are off by default contributed nothing (0 = absent).
+--exec sh -c "grep -c 'mysql_perf_schema_events_waits_total' $recv_body; true"
+--exec sh -c "grep -c 'mysql_binlog_file_number' $recv_body; true"
+
+--echo #
+--echo # The whole body parses as JSON (1 = valid).
+--exec sh -c "python3 -c \"import json,sys; json.load(open('$recv_body')); print(1)\" 2>/dev/null || echo 0; true"
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--remove_file $recv_py
+--error 0,1
+--remove_file $recv_body

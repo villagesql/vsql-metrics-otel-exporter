@@ -1,214 +1,388 @@
-# VillageSQL Extension Template
+# VillageSQL Metrics OTel Exporter
 
-A minimal template project for creating VillageSQL extensions. This template provides the essential structure and files needed to develop, build, and test custom VillageSQL extensions.
+Scrapes VillageSQL server metrics on a timer and pushes them to an OpenTelemetry collector as
+OTLP/HTTP metrics — using [mysqld_exporter](https://github.com/prometheus/mysqld_exporter)'s
+metric names and labels, so existing Grafana dashboards and alert rules keep working.
 
-## What This Is
+The point is that you do not run a separate exporter process. No sidecar, no second set of
+database credentials, no extra network path — the server exports its own metrics.
 
-This template demonstrates how to create a VillageSQL extension by implementing a simple "Hello, World!" function. It includes all the minimum required files and follows the VillageSQL extension framework (VEF) structure.
+## Contents
 
-## Project Structure
+- [Quick start](#quick-start)
+- [Building](#building)
+- [Installing](#installing)
+- [Uninstalling](#uninstalling)
+- [Configuration](#configuration)
+- [Collectors](#collectors)
+- [Metric reference](#metric-reference)
+- [Security considerations](#security-considerations)
+- [Known limitations](#known-limitations)
+- [Testing](#testing)
+- [Contributing](#contributing)
+- [Reporting bugs and requesting features](#reporting-bugs-and-requesting-features)
+- [Contact](#contact)
+- [License](#license)
 
-```
-vsql_extension_template/
-├── manifest.json           # Extension metadata (name, version, description, etc.)
-├── CMakeLists.txt         # CMake build configuration
-├── cmake/
-│   └── FindVillageSQL.cmake  # CMake module for finding VillageSQL
-├── src/
-│   └── hello.cc           # C++ implementation using VEF API
-└── test/
-    ├── t/                 # Test files (.test)
-    │   └── hello_basic.test
-    └── r/                 # Expected results (.result)
-        └── hello_basic.result
-```
+## Quick start
 
-## Prerequisites
-
-- VillageSQL build directory (with completed build)
-- CMake 3.16 or higher
-- C++ compiler with C++17 support
-
-## Building the Extension
-
-1. Create a build directory and configure:
+End to end, from a clean checkout to metrics arriving at a collector. Substitute your own
+VillageSQL build directory throughout.
 
 ```bash
-mkdir  build
-cd build
-cmake .. -DVillageSQL_BUILD_DIR=/path/to/villagesql/build
+cd vsql-metrics-otel-exporter
+export VillageSQL_BUILD_DIR=$HOME/build/villagesql
 ```
 
-**Note**: `VillageSQL_BUILD_DIR` should point to your VillageSQL build directory. The VEB install directory is automatically set to `${VillageSQL_BUILD_DIR}/veb_output_directory`.
-
-2. Build the extension:
+**1. Build.**
 
 ```bash
-make
+./build.sh                                    # -> build/vsql_metrics_otel_exporter.veb
 ```
 
-This creates the `vsql_extension_template.veb` package in the build directory.
-
-3. Install the VEB (optional):
+**2. Start a collector to receive the metrics.** Any OpenTelemetry Collector with an OTLP/HTTP
+receiver on `:4318` works; this one writes what it receives to a file so you can look at it.
 
 ```bash
-make install
+mkdir -p otel-out && chmod 777 otel-out
+docker run -d --name vsql-metrics-otel -p 4318:4318 \
+  -v "$PWD/test/otel-collector-config.yaml:/etc/otelcol/config.yaml" \
+  -v "$PWD/otel-out:/output" otel/opentelemetry-collector
 ```
 
-This copies the VEB to the directory specified by `VEB_INSTALL_DIR`. If not using `make install`, you can manually copy the VEB file to your desired location.
+**3. Run the tests** — optional, but this is the fastest confirmation that the build works
+against your server. With the collector from step 2 running, the live conformance test runs too;
+without it, that one test skips and the rest stay hermetic.
 
-## Using the Extension
+```bash
+./test.sh
+```
 
-After building the VEB file, load the extension in VillageSQL:
+**4. Stage the extension and install it.**
+
+```bash
+cp build/vsql_metrics_otel_exporter.veb "$VillageSQL_BUILD_DIR/lib/veb/"
+"$VillageSQL_BUILD_DIR/bin/mysql" -u root -p
+```
 
 ```sql
-INSTALL EXTENSION vsql_extension_template;
+-- Once per server: this extension uses preview capabilities. The server rejects a
+-- plain SET GLOBAL here, so use SET PERSIST.
+SET PERSIST vsql_allow_preview_extensions = ON;
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:4318';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 2000;  -- set BEFORE enabling
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
 ```
 
-Then test the function:
+**5. Confirm it is working.**
 
 ```sql
--- The hello_world function should now be available (note the namespace qualification)
-SELECT vsql_extension_template.hello_world();
--- Returns: Hello, World!
+SHOW GLOBAL STATUS LIKE 'vsql_metrics_otel_exporter.%';
 ```
 
-Note: Extension names use underscores, not hyphens (e.g., `vsql_extension_template`).
+`exports_total` climbing with `export_errors_total` at 0 is what you want. Then look at what
+actually arrived:
+
+```bash
+head -c 400 otel-out/received.json
+```
+
+**6. Turn on more collectors** whenever you like — they take effect on the next tick.
+
+```sql
+SET GLOBAL vsql_metrics_otel_exporter.collect_perf_schema_eventswaits = ON;
+SET GLOBAL vsql_metrics_otel_exporter.collect_info_schema_innodb_metrics = ON;
+```
+
+> **Set `export_interval_ms` before enabling the worker.** It is read at the *end* of each tick,
+> so changing it from an hour to a second takes up to an hour to apply. Toggling `enabled` off
+> and on applies it immediately.
+
+## Building
+
+Prerequisites: a VillageSQL build directory, CMake 3.16+, a C++17 compiler, and libcurl
+development headers.
+
+**Debian/Ubuntu**
+
+```bash
+sudo apt-get install -y cmake g++ libcurl4-openssl-dev
+```
+
+**RHEL/Fedora**
+
+```bash
+sudo dnf install -y cmake gcc-c++ libcurl-devel
+```
+
+**macOS** — libcurl ships with the Xcode Command Line Tools.
+
+```bash
+xcode-select --install
+brew install cmake
+```
+
+Then:
+
+```bash
+export VillageSQL_BUILD_DIR=$HOME/build/villagesql
+./build.sh
+```
+
+This produces `build/vsql_metrics_otel_exporter.veb`.
+
+## Installing
+
+The exporter uses preview extension capabilities (a background worker and internal SQL), so the
+server must allow them. The server rejects a plain `SET GLOBAL` for this variable — use
+`SET PERSIST` so it survives restart:
+
+```sql
+SET PERSIST vsql_allow_preview_extensions = ON;
+```
+
+Copy the `.veb` into the server's `veb_dir`, then:
+
+```sql
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://collector:4318';
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+```
+
+`/v1/metrics` is appended to `otlp_endpoint`. That is the whole quick start — with the default
+collector set, the server begins exporting roughly 1,000 data points every 10 seconds.
+
+Check that it is working:
+
+```sql
+SHOW GLOBAL STATUS LIKE 'vsql_metrics_otel_exporter.%';
+```
+
+`exports_total` should be climbing and `export_errors_total` should be 0.
+
+### A collector to point it at
+
+Any OpenTelemetry Collector with an OTLP/HTTP receiver on `:4318` will do. For local testing,
+`test/otel-collector-config.yaml` in this repo writes received metrics to a file:
+
+```bash
+docker run -d --name vsql-metrics-otel -p 4318:4318 \
+  -v "$PWD/test/otel-collector-config.yaml:/etc/otelcol/config.yaml" \
+  -v "$PWD/otel-out:/output" otel/opentelemetry-collector
+```
+
+To reach Prometheus, add a `prometheusremotewrite` exporter to the collector's metrics pipeline.
+The metric names arrive already in mysqld_exporter's spelling, so nothing needs renaming.
+
+## Uninstalling
+
+```sql
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+```
+
+Uninstalling removes every system and status variable the extension registered, so nothing is
+left behind in `SHOW VARIABLES` or `SHOW GLOBAL STATUS`. The extension defines no custom types
+and no functions, so no table or index can depend on it — there is nothing to migrate first.
+
+Then remove the staged package, and the test collector if you started one:
+
+```bash
+rm -f "$VillageSQL_BUILD_DIR/lib/veb/vsql_metrics_otel_exporter.veb"
+docker rm -f vsql-metrics-otel && rm -rf otel-out
+```
+
+`vsql_allow_preview_extensions` can stay on; the server refuses to turn it off while any preview
+extension is still installed, and it is harmless once none are.
+
+## Configuration
+
+All variables are prefixed `vsql_metrics_otel_exporter.`.
+
+| Variable | Default | Range | Purpose |
+|---|---|---|---|
+| `enabled` | `OFF` | | Start and stop the background worker |
+| `otlp_endpoint` | `http://localhost:4318` | | Collector base URL; empty stops sending without stopping scraping |
+| `otlp_headers` | *(empty)* | | Extra HTTP headers, `Key=Value` comma separated |
+| `service_name` | `villagesql` | | OTLP resource attribute `service.name` |
+| `service_instance_id` | *(empty)* | | OTLP resource attribute `service.instance.id`; omitted when empty |
+| `export_interval_ms` | `10000` | 1000–3600000 | Scrape and export interval |
+| `http_timeout_secs` | `10` | 1–300 | Timeout for one export request |
+| `max_datapoints_per_request` | `2000` | 100–1000000 | Split larger scrapes across several requests |
+| `max_body_bytes` | `4194304` | 65536–134217728 | Size backstop for one request body |
+| `processlist_min_time` | `0` | 0–86400 | Ignore threads younger than this, in seconds |
+| `eventsstatements_limit` | `250` | 1–10000 | Maximum statement digests per scrape |
+| `eventsstatements_timelimit` | `86400` | 1–604800 | Only report digests seen within this many seconds |
+| `eventsstatements_digest_text_limit` | `120` | 1–4096 | Truncate `digest_text` label values |
+
+Plus one `collect_*` switch per collector — see below.
+
+**Interval changes take effect after the current sleep.** The worker reads the interval at the
+end of each tick, so lowering it from an hour to a second takes up to an hour to apply. Toggling
+`enabled` off and on applies it immediately.
+
+### Sending to a hosted backend
+
+`otlp_headers` carries whatever the backend needs for authentication:
+
+```sql
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'https://otlp.example.com';
+SET GLOBAL vsql_metrics_otel_exporter.otlp_headers  = 'Authorization=Bearer TOKEN, X-Scope-OrgID=42';
+```
+
+Read [Security considerations](#security-considerations) before doing this.
+
+## Collectors
+
+Each collector corresponds to a mysqld_exporter `--collect.*` flag, and the defaults match
+mysqld_exporter's: the same five on, the rest off. Variable names cannot contain a dot, so the
+flag name is transliterated with underscores.
+
+| mysqld_exporter flag | Variable | Default |
+|---|---|---|
+| `--collect.global_status` | `collect_global_status` | **ON** |
+| `--collect.global_variables` | `collect_global_variables` | **ON** |
+| `--collect.slave_status` | `collect_slave_status` | **ON** |
+| `--collect.info_schema.innodb_cmp` | `collect_info_schema_innodb_cmp` | **ON** |
+| `--collect.info_schema.innodb_cmpmem` | `collect_info_schema_innodb_cmpmem` | **ON** |
+| `--collect.info_schema.innodb_metrics` | `collect_info_schema_innodb_metrics` | OFF |
+| `--collect.info_schema.processlist` | `collect_info_schema_processlist` | OFF |
+| `--collect.info_schema.tables` | `collect_info_schema_tables` | OFF |
+| `--collect.perf_schema.eventsstatements` | `collect_perf_schema_eventsstatements` | OFF |
+| `--collect.perf_schema.eventsstatementssum` | `collect_perf_schema_stmt_sum` | OFF |
+| `--collect.perf_schema.eventswaits` | `collect_perf_schema_eventswaits` | OFF |
+| `--collect.perf_schema.tableiowaits` | `collect_perf_schema_tableiowaits` | OFF |
+| `--collect.perf_schema.indexiowaits` | `collect_perf_schema_indexiowaits` | OFF |
+| `--collect.perf_schema.file_events` | `collect_perf_schema_file_events` | OFF |
+| `--collect.perf_schema.tablelocks` | `collect_perf_schema_tablelocks` | OFF |
+| `--collect.engine_innodb_status` | `collect_engine_innodb_status` | OFF |
+| `--collect.binlog_size` | `collect_binlog_size` | OFF |
+
+`collect_perf_schema_stmt_sum` is the one name that is not a direct transliteration: the full
+form is 39 characters, and the server silently truncates a qualified variable name at 64.
+
+**`collect_info_schema_tables` is high cardinality** — it emits five series per table. On a
+server with tens of thousands of tables, leave it off or expect a correspondingly large export.
+
+A collector that fails does not stop the others: its failure is counted, reported in
+`mysql_exporter_collector_success`, logged to the error log, and the rest of the scrape is
+exported normally.
+
+## Metric reference
+
+Names and labels match mysqld_exporter. A few worth knowing:
+
+| Metric | Labels | Notes |
+|---|---|---|
+| `mysql_up` | — | 1 when the scrape could open a session, 0 otherwise |
+| `mysql_exporter_collector_success` | `collector` | Per-collector health, 0 when that collector failed |
+| `mysql_exporter_collector_duration_seconds` | `collector` | Per-collector scrape time |
+| `mysql_global_status_commands_total` | `command` | From `Com_*` |
+| `mysql_global_status_handlers_total` | `handler` | From `Handler_*` |
+| `mysql_global_status_innodb_row_ops_total` | `operation` | From `Innodb_rows_*` |
+| `mysql_global_status_buffer_pool_pages` | `state` | `dirty` is reported separately, as it overlaps the other states |
+| `mysql_global_status_<name>` | — | Everything else in `SHOW GLOBAL STATUS`, lowercased |
+| `mysql_global_variables_<name>` | — | Numeric-valued entries of `SHOW GLOBAL VARIABLES` |
+| `mysql_version_info` | `version`, `version_comment`, `innodb_version` | Always 1 |
+
+Counters are emitted as cumulative monotonic OTLP sums; everything else is a gauge.
+
+**Status values that are not numbers produce no metric at all.** `ON`/`OFF` become 1/0,
+certificate and datetime values become Unix timestamps, and anything else — notably the
+`Rsa_public_key` PEM blobs — is skipped rather than exported as zero. This matches
+mysqld_exporter's behaviour.
+
+**Extension status variables are sanitised.** VillageSQL names them `<extension>.<var>`, and a
+dot is not legal in a metric name, so `vsql_stat_otel.events_captured` arrives as
+`mysql_global_status_vsql_stat_otel_events_captured`. mysqld_exporter has no equivalent rule
+because MySQL's own status variables never contain a dot.
+
+**Counter resets are not detected.** `startTimeUnixNano` is the process start time, so a
+`FLUSH STATUS` resets the underlying counters without the exporter marking a reset, and `rate()`
+sees a dip. mysqld_exporter behaves the same way.
+
+## Security considerations
+
+**`otlp_headers` holds credentials in a system variable.** Anything you put there — a bearer
+token, an API key — is visible to any user who can run `SHOW VARIABLES`, appears in
+`performance_schema.global_variables`, and is written to `mysqld-auto.cnf` in plain text if you
+`SET PERSIST` it. Treat it as a shared secret: grant it the same care as a replication password,
+prefer a collector on localhost or a private network over a hosted endpoint with a token, and
+remember that `SET GLOBAL` statements can be captured by the query log and by this server's own
+statement telemetry.
+
+Header values are rejected if they contain CR or LF, so a header cannot be used to inject a
+second header or a request body.
+
+**The exporter sends server metadata off the box.** `SHOW GLOBAL VARIABLES` includes paths,
+version strings, and configuration detail; `info_schema.tables` includes schema and table names;
+`perf_schema.eventsstatements` includes normalised query text as a label. Anyone with access to
+your metrics backend can read all of it. The last of those is off by default, and
+`eventsstatements_digest_text_limit` bounds how much query text leaves the server.
+
+**Use TLS for anything beyond localhost.** An `https://` endpoint is verified against the system
+CA bundle. Plain `http://` sends everything above in clear text.
+
+**Privileges.** The background worker runs its queries with full privileges, which is what lets
+it read `SHOW ENGINE INNODB STATUS` and the complete process list. It only ever reads; it issues
+no DDL or DML. Installing the extension is therefore equivalent to granting your metrics
+pipeline read access to server state.
+
+## Known limitations
+
+- **Four mysqld_exporter collectors cannot exist on this server.**
+  `info_schema.query_response_time` (one of mysqld_exporter's defaults), `info_schema.userstats`,
+  `info_schema.clientstats` and `info_schema.tablestats` depend on Percona/MariaDB `userstat`
+  tables that this build does not have. `heartbeat` needs an external `pt-heartbeat`. Panels fed
+  by those metrics will be empty. Merging the Percona enhancements that provide User Statistics
+  and global query response-time statistics is tracked upstream in
+  [villagesql-server#622](https://github.com/villagesql/villagesql-server/issues/622) — 👍 it if
+  you want these collectors.
+- **Push, not pull.** No `/metrics` endpoint; a collector must sit between this and Prometheus.
+- **No retry and no compression.** A failed export is dropped. Cumulative counters self-heal on
+  the next tick; gauges lose a sample. Bodies are not gzipped.
+- **Preview APIs.** Requires `vsql_allow_preview_extensions = ON`. These capabilities may change
+  between VillageSQL releases, in API and ABI, with no deprecation window. A path to stabilizing
+  them is tracked in
+  [villagesql-server#623](https://github.com/villagesql/villagesql-server/issues/623).
+- **Replication metrics are mapped positionally.** The extension API exposes no column names, so
+  `SHOW REPLICA STATUS` columns are matched against a transcribed list. If a future server
+  version changes that list, the collector reports a failure rather than guessing.
+- **No fractional-valued settings.** Extension system variables cannot be floating point, so
+  every knob is an integer.
+- **The last error message is not readable from SQL.** Extension status variables can only be
+  numeric. `last_export_http_status`, `last_export_curl_errno` and `last_scrape_error_collector`
+  classify the failure; the text goes to the server error log.
+- **No export on shutdown.** At most one interval is skipped; because the metrics are cumulative
+  counters read fresh from the server, the next export after restarting carries the full value.
+
+The API gaps behind several of these are tracked upstream — see
+[Reporting bugs and requesting features](#reporting-bugs-and-requesting-features) if one is
+blocking you, as demand is what gets them prioritised.
 
 ## Testing
 
-The extension includes test files using the MySQL Test Runner (MTR) framework.
-
-### Running Tests
-
-**Option 1 (Default): Using installed VEB**
-
-This method assumes you have successfully run `make install` to install the VEB to your veb_dir.
-
-```bash
-cd ~/build/mysql-test
-perl mysql-test-run.pl --suite=/path/to/vsql-extension-template/test
-
-# Run with specific options
-perl mysql-test-run.pl --suite=/path/to/vsql-extension-template/test --parallel=auto
-```
-
-**Option 2: Using a specific VEB file**
-
-Use this to test a specific VEB build without installing it first:
-
-```bash
-cd ~/build/mysql-test
-VSQL_EXTENSION_TEMPLATE_VEB=/path/to/build/vsql_extension_template.veb \
-  perl mysql-test-run.pl --suite=/path/to/vsql-extension-template/test
-```
-
-### Creating/Updating Test Results
-
-To create or update expected test results:
-
-```bash
-perl mysql-test-run.pl --suite=/path/to/test --record
-```
-
-## Customizing This Template
-
-To create your own extension:
-
-1. **Update `manifest.json`**:
-   - Change `name` to your extension name (use underscores, e.g., `my_extension_name`)
-   - Update `description`, `author`, and other metadata
-
-2. **Update `CMakeLists.txt`**:
-   - Change `EXTENSION_NAME` to match your extension (use underscores)
-   - Update the library name and source files in `add_library()`
-   - Add dependencies if needed (e.g., `find_package()`, `target_link_libraries()`)
-
-3. **Implement Your Functions**:
-   - Modify `src/hello.cc` or create new source files
-   - Use the VDF API signature: `void func_impl(vef_context_t* ctx, [args...], vef_vdf_result_t* result)`
-   - Register functions using `VEF_GENERATE_ENTRY_POINTS()` macro
-   - Include `<villagesql/extension.h>`
-
-4. **Create Tests**:
-   - Add `.test` files in the `test/t/` directory
-   - Generate expected results with `--record` flag
-   - Verify your functions work correctly
-
-## Extension Development Tips
-
-- **Extension Naming**: Always use underscores in extension names, not hyphens
-- **Function Qualification**: Functions must be called with namespace qualification (e.g., `extension_name.function_name()`)
-- **Return Types**: Common types are `STRING`, `INT`, `REAL`, or custom types
-- **Result Types**: Set `result->type` to `VEF_RESULT_VALUE`, `VEF_RESULT_NULL`, or `VEF_RESULT_ERROR`
-- **String Results**: Copy to `result->str_buf` and set `result->actual_len`
-- **Error Handling**: Set `result->type = VEF_RESULT_ERROR` and copy message to `result->error_msg`
-- **NULL Handling**: Check `arg->is_null` for input arguments
-- **Testing**: Always test with various inputs including edge cases and NULL values
-
-## Example: Adding a New Function
-
-1. Add implementation to `src/hello.cc`:
-
-```cpp
-// Function implementation
-void greet_impl(vef_context_t* ctx,
-                vef_invalue_t* name_arg,
-                vef_vdf_result_t* result) {
-    if (name_arg->is_null) {
-        result->type = VEF_RESULT_NULL;
-        return;
-    }
-
-    snprintf(result->str_buf, 256, "Hello, %.*s!",
-             (int)name_arg->str_len, name_arg->str_value);
-    result->type = VEF_RESULT_VALUE;
-    result->actual_len = strlen(result->str_buf);
-}
-```
-
-2. Register in `VEF_GENERATE_ENTRY_POINTS()`:
-
-```cpp
-VEF_GENERATE_ENTRY_POINTS(
-  make_extension("vsql_extension_template", "1.0.0")
-    .func(make_func<&hello_world_impl>("hello_world")
-      .returns(STRING)
-      .buffer_size(14)
-      .build())
-    .func(make_func<&greet_impl>("greet")
-      .returns(STRING)
-      .param(STRING)
-      .buffer_size(256)
-      .build())
-)
-```
-
-3. Rebuild and test:
-dominic/update-to-new-api
-```bash
-cd build
-make
-make install  # If VEB_INSTALL_DIR is configured
-```
-
-Then in VillageSQL:
-
-```sql
-INSTALL EXTENSION vsql_extension_template;
-SELECT vsql_extension_template.greet('VillageSQL');
-```
-
-## Resources
-
-- [VillageSQL Documentation](https://villagesql.org/)
-- [VillageSQL Extension Framework (VEF) Guide](https://villagesql.org/docs/extensions/)
-- [CMake Documentation](https://cmake.org/documentation/)
-
-## License
-
-This template is released under the GPL-2.0 license. See the license header in source files for details.
+See [TESTING.md](TESTING.md).
 
 ## Contributing
 
-When creating extensions based on this template, ensure your code follows the same license and includes appropriate copyright notices.
+See the [VillageSQL Contributing Guide](https://github.com/villagesql/villagesql-server/blob/main/CONTRIBUTING.md).
+
+## Reporting bugs and requesting features
+
+Please open an issue on this repository's GitHub Issues page. For gaps in the VillageSQL
+extension API itself, open an issue on
+[villagesql-server](https://github.com/villagesql/villagesql-server/issues).
+
+## Contact
+
+- Discord: https://discord.gg/KSr6whd3Fr
+- GitHub Issues
+
+## License
+
+GPL v2 — see [LICENSE](LICENSE).

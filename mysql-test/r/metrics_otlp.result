@@ -1,0 +1,82 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+# The collector accepted the export, and no collector failed on the way.
+SELECT VARIABLE_VALUE > 0 AS exported FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total';
+exported
+1
+SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total';
+no_export_errors
+1
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+no_scrape_errors
+1
+SELECT VARIABLE_VALUE = 200 AS http_ok FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
+http_ok
+1
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+#
+# Envelope: one resourceMetrics, one scopeMetrics, at least one dataPoints
+# array (1 = present).
+1
+1
+1
+#
+# Metric names carry mysqld_exporter's spelling exactly, so existing
+# dashboards keep working (1 = present).
+1
+1
+1
+1
+1
+1
+1
+1
+#
+# Labels are attached where mysqld_exporter attaches them (1 = present).
+1
+1
+1
+#
+# Counters are framed as cumulative monotonic sums (1 = present).
+1
+1
+1
+#
+# Protobuf JSON maps 64-bit integers to quoted strings and doubles to bare
+# numbers. Getting either backwards is accepted by some receivers and
+# rejected by others, so both directions are asserted.
+# quoted asInt present (1 = yes):
+1
+# bare asInt absent (0 = none):
+0
+# quoted timeUnixNano present (1 = yes):
+1
+# bare timeUnixNano absent (0 = none):
+0
+# quoted asDouble absent (0 = none):
+0
+# no attribute array starts with a stray comma (0 = none):
+0
+#
+# Status values that carry no number produce no metric at all, rather than
+# a zero or a label. Rsa_public_key is a PEM blob (0 = correctly skipped):
+0
+0
+#
+# An extension's own status variables are named "<extension>.<var>", and a
+# dot is not legal in a metric name. They must arrive sanitised (1), with
+# no dot surviving (0).
+1
+0
+#
+# Collectors that are off by default contributed nothing (0 = absent).
+0
+0
+#
+# The whole body parses as JSON (1 = valid).
+1
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

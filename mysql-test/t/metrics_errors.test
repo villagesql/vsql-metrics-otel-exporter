@@ -1,0 +1,111 @@
+# Behaviour when exporting goes wrong.
+#
+# The point of this test is the last section: nothing that happens to the
+# collector may stop the worker. A scraper that dies the first time its
+# collector restarts is worse than no scraper, because the gap is silent.
+#
+# Every wait below is on a signal that is specific to the section it belongs to.
+# Waiting on a cumulative counter that an earlier section already advanced would
+# be satisfied instantly and assert nothing.
+
+--source include/not_windows.inc
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+# Port 1 is reserved and nothing listens on it, so a connection attempt fails
+# immediately rather than after a timeout.
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:1';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 2;
+--enable_query_log
+
+--echo # A header list that is not Key=Value cannot be turned into headers. The
+--echo # variable accepts any string -- it is parsed on the export path -- so the
+--echo # rejection has to be observed there.
+SET GLOBAL vsql_metrics_otel_exporter.otlp_headers = 'ThisHasNoEqualsSign';
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total'
+--source include/wait_condition.inc
+
+--echo # The body was never put on the wire: no transport error and no HTTP
+--echo # status were recorded, which is only true if the export stopped before
+--echo # the request was built. Had the parsing been skipped, the request would
+--echo # have been attempted against the unreachable endpoint above and a
+--echo # transport error would be sitting here instead.
+SELECT VARIABLE_VALUE = 0 AS no_request_attempted FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_curl_errno';
+SELECT VARIABLE_VALUE = 0 AS no_http_status FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+--echo #
+--echo # With a well-formed list the export proceeds to the request, and now
+--echo # fails on the unreachable endpoint instead.
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.otlp_headers = 'Authorization=Bearer secret, X-Scope-OrgID=7';
+--enable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+# Waits on the transport error itself, which is still 0 from the section above,
+# rather than on the shared error counter.
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_curl_errno'
+--source include/wait_condition.inc
+
+--echo # A connection failure is a transport error with no HTTP status, since no
+--echo # response was ever received.
+SELECT VARIABLE_VALUE > 0 AS transport_error_recorded FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_curl_errno';
+SELECT VARIABLE_VALUE = 0 AS no_http_status FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
+
+--echo #
+--echo # Collection is unaffected: the failure is in delivery, not in reading the
+--echo # server.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+SELECT VARIABLE_VALUE = 0 AS no_collector_failed FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_scrape_error_collector';
+
+--echo #
+--echo # And the worker keeps going: scrapes continue past the failed exports.
+--disable_query_log
+--let $scrapes_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrapes_total'`
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > $scrapes_before FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrapes_total'
+--source include/wait_condition.inc
+--let $scrapes_after = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrapes_total'`
+eval SELECT $scrapes_after > $scrapes_before AS worker_still_running;
+--enable_query_log
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+--echo #
+--echo # An empty endpoint parks the exporter rather than failing it: the worker
+--echo # keeps scraping and simply sends nothing, so the error count does not
+--echo # move.
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = '';
+--let $errors_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total'`
+--let $scrapes_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrapes_total'`
+--enable_query_log
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+--disable_query_log
+# Two further scrapes, so the assertion below covers a completed tick rather
+# than catching the worker mid-flight.
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > $scrapes_before + 1 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrapes_total'
+--source include/wait_condition.inc
+--let $errors_after = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total'`
+eval SELECT $errors_after = $errors_before AS no_new_export_errors;
+--enable_query_log
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

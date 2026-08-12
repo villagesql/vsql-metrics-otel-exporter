@@ -1,0 +1,75 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+# Every configuration variable, with the value it defaults to. The
+# collect_* defaults are the ones mysqld_exporter uses for the matching
+# --collect.* flag, so a default install scrapes the same things it does.
+SHOW VARIABLES LIKE 'vsql_metrics_otel_exporter.%';
+Variable_name	Value
+vsql_metrics_otel_exporter.collect_binlog_size	OFF
+vsql_metrics_otel_exporter.collect_engine_innodb_status	OFF
+vsql_metrics_otel_exporter.collect_global_status	ON
+vsql_metrics_otel_exporter.collect_global_variables	ON
+vsql_metrics_otel_exporter.collect_info_schema_innodb_cmp	ON
+vsql_metrics_otel_exporter.collect_info_schema_innodb_cmpmem	ON
+vsql_metrics_otel_exporter.collect_info_schema_innodb_metrics	OFF
+vsql_metrics_otel_exporter.collect_info_schema_processlist	OFF
+vsql_metrics_otel_exporter.collect_info_schema_tables	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_eventsstatements	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_eventswaits	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_file_events	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_indexiowaits	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_stmt_sum	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_tableiowaits	OFF
+vsql_metrics_otel_exporter.collect_perf_schema_tablelocks	OFF
+vsql_metrics_otel_exporter.collect_slave_status	ON
+vsql_metrics_otel_exporter.enabled	OFF
+vsql_metrics_otel_exporter.eventsstatements_digest_text_limit	120
+vsql_metrics_otel_exporter.eventsstatements_limit	250
+vsql_metrics_otel_exporter.eventsstatements_timelimit	86400
+vsql_metrics_otel_exporter.export_interval_ms	10000
+vsql_metrics_otel_exporter.http_timeout_secs	10
+vsql_metrics_otel_exporter.max_body_bytes	4194304
+vsql_metrics_otel_exporter.max_datapoints_per_request	2000
+vsql_metrics_otel_exporter.otlp_endpoint	http://localhost:4318
+vsql_metrics_otel_exporter.otlp_headers	
+vsql_metrics_otel_exporter.processlist_min_time	0
+vsql_metrics_otel_exporter.service_instance_id	
+vsql_metrics_otel_exporter.service_name	villagesql
+#
+# Health counters. Failures are classified numerically here because the
+# extension SDK has no string-valued status variable; the corresponding
+# message goes to the server error log.
+SELECT VARIABLE_NAME FROM performance_schema.global_status
+WHERE VARIABLE_NAME LIKE 'vsql_metrics_otel_exporter.%'
+  ORDER BY VARIABLE_NAME;
+VARIABLE_NAME
+vsql_metrics_otel_exporter.bytes_exported_total
+vsql_metrics_otel_exporter.chunks_last_export
+vsql_metrics_otel_exporter.datapoints_exported_total
+vsql_metrics_otel_exporter.export_errors_total
+vsql_metrics_otel_exporter.exports_total
+vsql_metrics_otel_exporter.last_datapoint_count
+vsql_metrics_otel_exporter.last_export_curl_errno
+vsql_metrics_otel_exporter.last_export_http_status
+vsql_metrics_otel_exporter.last_scrape_duration_us
+vsql_metrics_otel_exporter.last_scrape_error_collector
+vsql_metrics_otel_exporter.last_scrape_utime
+vsql_metrics_otel_exporter.scrape_errors_total
+vsql_metrics_otel_exporter.scrapes_total
+#
+# The background worker stays off until it is switched on explicitly.
+SELECT VARIABLE_VALUE AS enabled_by_default
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+enabled_by_default
+OFF
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+#
+# Uninstalling removes every variable the extension registered.
+SELECT COUNT(*) AS variables_left FROM performance_schema.global_variables
+WHERE VARIABLE_NAME LIKE 'vsql_metrics_otel_exporter.%';
+variables_left
+0
+SELECT COUNT(*) AS status_counters_left FROM performance_schema.global_status
+WHERE VARIABLE_NAME LIKE 'vsql_metrics_otel_exporter.%';
+status_counters_left
+0

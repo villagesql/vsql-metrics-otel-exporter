@@ -1,0 +1,97 @@
+# Splitting a large scrape across several OTLP requests.
+#
+# A stock scrape is around a thousand data points; with every collector on and a
+# large schema it can reach tens of thousands, which is more than most gateways
+# will accept in one body. Lowering the per-request limit forces the split so it
+# can be observed on a small server.
+
+--source include/not_windows.inc
+
+--let $recv_port = 14403
+--let $recv_count = $MYSQLTEST_VARDIR/tmp/otlp_chunk_count.txt
+--let $recv_py = $MYSQLTEST_VARDIR/tmp/otlp_chunk_recv.py
+
+--error 0,1
+--remove_file $recv_count
+
+# Records only whether each request arrived and parsed, never its contents: the
+# number of chunks depends on how many metrics the server happens to have.
+--write_file $recv_py
+import http.server, json, sys, time
+port = int(sys.argv[1]); out = sys.argv[2]
+deadline = time.time() + 40
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        data = self.rfile.read(n)
+        try:
+            doc = json.loads(data)
+            ok = 'resourceMetrics' in doc
+        except Exception:
+            ok = False
+        with open(out, 'a') as f:
+            f.write('ok\n' if ok else 'bad\n')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'{}')
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(('127.0.0.1', port), H)
+srv.timeout = 0.5
+while time.time() < deadline:
+    srv.handle_request()
+EOF
+
+--exec_in_background python3 $recv_py $recv_port $recv_count
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $recv_port RECV_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:$recv_port';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 3600000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
+# The lowest value the variable accepts, and far below the data-point count of
+# any real scrape, so a split is guaranteed.
+SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 100;
+--enable_query_log
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+
+--echo # The scrape was split into more than one request, and every request was
+--echo # accepted.
+SELECT VARIABLE_VALUE > 1 AS split_into_chunks FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.chunks_last_export';
+SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.export_errors_total';
+
+--echo #
+--echo # The number of requests is exactly what the data-point count requires at
+--echo # 100 points per request, rounded up -- so no data point was dropped and
+--echo # none was sent twice.
+SELECT CEIL(
+         (SELECT VARIABLE_VALUE FROM performance_schema.global_status
+            WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_datapoint_count') / 100
+       ) =
+       (SELECT VARIABLE_VALUE FROM performance_schema.global_status
+          WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.chunks_last_export')
+       AS chunk_count_exact;
+
+--echo #
+--echo # Every chunk is a self-contained OTLP envelope, not a fragment of one
+--echo # (0 = no malformed request reached the collector).
+--exec sh -c "grep -c bad $recv_count; true"
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--remove_file $recv_py
+--error 0,1
+--remove_file $recv_count

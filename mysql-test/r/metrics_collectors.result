@@ -1,0 +1,27 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+# With the stock configuration, wait-event collection is off.
+SELECT VARIABLE_VALUE AS eventswaits_default
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_perf_schema_eventswaits';
+eventswaits_default
+OFF
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+# Always-on collectors are present (1), wait events are not (0).
+1
+0
+#
+# Now switch wait-event collection on.
+SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+# The same collectors as before, plus wait events (1 each).
+1
+1
+1
+#
+# Turning a collector on did not break any other collector.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+no_scrape_errors
+1
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

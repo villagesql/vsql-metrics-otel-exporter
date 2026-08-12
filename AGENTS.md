@@ -1,233 +1,107 @@
 # AGENTS.md
 
-This file provides guidance to AI coding assistants when working with code in this repository.
+Guidance for AI coding assistants working in this repository.
 
-**Note**: Also check `AGENTS.local.md` for additional local development instructions when present.
+## What this is
 
-## Project Overview
+`vsql_metrics_otel_exporter` is a VillageSQL extension that scrapes server metrics on a timer
+and pushes them to an OpenTelemetry collector as OTLP/HTTP metrics.
 
-This is a template project for creating VillageSQL extensions. It provides the minimum required files and structure to build, package, and install custom extensions for VillageSQL (a MySQL-compatible database). The template includes a simple "Hello, World!" function as an example.
+The product goal is **drop-in compatibility with
+[mysqld_exporter](https://github.com/prometheus/mysqld_exporter)**: metric names and label sets
+match it byte for byte, so existing Grafana dashboards and alert rules keep working once an
+OTLP collector translates to Prometheus. That constraint dominates almost every design decision
+here. If a metric name looks wrong in isolation, check it against
+[mysqld_exporter's `collector/` source](https://github.com/prometheus/mysqld_exporter/tree/main/collector)
+before changing it — several are counterintuitive on purpose because upstream is, and matching
+upstream is the point.
 
-## Build System
+Repo directory is hyphenated (`vsql-metrics-otel-exporter`); the install name is underscored
+(`vsql_metrics_otel_exporter`) because it becomes the prefix of every system and status variable,
+and a dot-or-hyphen in that position would need backticks in every SQL statement.
 
-- **Build**: `cmake . && make` (or `mkdir build && cd build && cmake .. && make`)
-- **Create VEB package**: Automatically created during `make`
-- **Install extension**: `make install` (if VEB_INSTALL_DIR is defined)
-
-The build process:
-1. Uses CMake to find VillageSQL via `find_package(VillageSQL REQUIRED)`
-2. Compiles C++ source files into shared library `hello.so`
-3. Packages library with `manifest.json` into `vsql_extension_template.veb` archive using `VEF_CREATE_VEB()` macro
-4. VEB can be installed and loaded using `INSTALL EXTENSION` command
-
-Set `VillageSQL_BUILD_DIR` to point to your VillageSQL build directory.
-
-## Architecture
-
-**Core Components:**
-- `src/hello.cc` - VEF function implementation for the hello_world function
-- `manifest.json` - Extension metadata (name, version, description, author, license)
-- `CMakeLists.txt` - CMake build configuration
-- `cmake/FindVillageSQL.cmake` - CMake module for finding VillageSQL
-- `test/t/` - Test files directory (`.test` files using MTR framework)
-- `test/r/` - Expected test results directory (`.result` files)
-
-**Available Functions:**
-- `hello_world()` - Returns the string "Hello, World!"
-
-**Dependencies:**
-- Requires VillageSQL (Extension Framework headers)
-- Uses VillageSQL Extension Framework (VEF) API
-- C++ compiler with C++17 support
-
-**Code Organization:**
-- File naming: lowercase with underscores (e.g., `hello.cc`)
-- Function naming: lowercase with underscores (e.g., `hello_world`)
-- Extension naming: lowercase with underscores (e.g., `vsql_extension_template`)
-- Variable naming: lowercase with underscores (e.g., `result`)
-
-## VillageSQL Extension Framework (VEF) API Pattern
-
-VEF provides a modern C++ API for creating extensions. Functions are registered using the `VEF_GENERATE_ENTRY_POINTS()` macro with a fluent builder interface.
-
-### Basic Function Implementation
-
-Each function is implemented as a single function that takes context and result parameters:
-
-```cpp
-#include <villagesql/extension.h>
-
-using namespace villagesql::extension_builder;
-using namespace villagesql::func_builder;
-
-// Function implementation
-void my_function_impl(vef_context_t* ctx, vef_vdf_result_t* result) {
-    // Implement function logic
-    // Set result->type (IS_VALUE, IS_NULL, IS_ERROR)
-    // For strings: copy to result->str_buf, set result->actual_len
-    // For integers: set result->int_value
-    // For binary: copy to result->bin_buf, set result->actual_len
-}
-```
-
-### Function with Arguments
-
-For functions with arguments, add `vef_invalue_t*` parameters:
-
-```cpp
-void my_function_impl(vef_context_t* ctx,
-                      vef_invalue_t* arg1,
-                      vef_invalue_t* arg2,
-                      vef_vdf_result_t* result) {
-    // Check for NULL: arg1->is_null
-    // Access string: arg1->str_value, arg1->str_len
-    // Access integer: arg1->int_value
-    // Access binary: arg1->bin_value, arg1->bin_len
-}
-```
-
-### Extension Registration
-
-Use the `VEF_GENERATE_ENTRY_POINTS()` macro to register the extension and its functions:
-
-```cpp
-VEF_GENERATE_ENTRY_POINTS(
-  make_extension("extension_name", "version")
-    .func(make_func<&my_function_impl>("my_function")
-      .returns(STRING)  // or INT, REAL, UUID, etc.
-      .param(STRING)    // Add .param() for each argument
-      .buffer_size(100) // For STRING return type
-      .build())
-)
-```
-
-### Result Types
-
-- `IS_VALUE` - Function returned a value
-- `IS_NULL` - Function returned NULL
-- `IS_ERROR` - Function encountered an error (set `result->error_msg`)
-
-## Testing
-
-The extension includes test files using the MySQL Test Runner (MTR) framework:
-- **Test Location**:
-  - `test/t/` directory contains `.test` files with SQL test commands
-  - `test/r/` directory contains `.result` files with expected output
-- **Run Tests**:
-  ```bash
-  cd <BUILD_DIR>/mysql-test
-  perl mysql-test-run.pl --suite=<path-to-vsql-extension-template>/test
-  ```
-  Where `<BUILD_DIR>` is your VillageSQL/MySQL build directory
-- **Create/Update Results**: Use `--record` flag to generate or update expected `.result` files:
-  ```bash
-  perl mysql-test-run.pl --suite=<path-to-test-dir> --record
-  ```
-- Tests should validate function output and behavior
-- Each test should install the extension, run tests, and clean up (drop functions, uninstall extension)
-
-## Extension Installation
-
-After building the VEB file, load the extension in VillageSQL:
-
-```sql
-INSTALL EXTENSION 'vsql_extension_template';
-```
-
-Then test the functions:
-```sql
-SELECT hello_world();
-```
-
-Note: Extension names use underscores, not hyphens (e.g., `vsql_extension_template`, not `vsql-extension-template`).
-
-## Customizing the Template
-
-To create your own extension:
-
-1. **Update `manifest.json`**:
-   - Change `name` (use underscores, e.g., `my_extension_name`)
-   - Update `description`, `author`, and `version`
-
-2. **Update `CMakeLists.txt`**:
-   - Change `EXTENSION_NAME` variable (use underscores)
-   - Update library name in `add_library()` if desired
-   - Add additional source files to `add_library()` if needed
-   - Add dependencies (e.g., `find_package(OpenSSL)`, `target_link_libraries()`)
-
-3. **Implement your functions**:
-   - Modify `src/hello.cc` or create new `.cc` files
-   - Follow the VEF API pattern (single implementation function)
-   - Use `VEF_GENERATE_ENTRY_POINTS()` to register functions
-   - Add copyright header to all new source files
-
-4. **Register functions in code**:
-   - Functions are registered using the fluent builder API in `VEF_GENERATE_ENTRY_POINTS()`
-   - Specify return type with `.returns(STRING|INT|REAL|...)`
-   - Add parameters with `.param(type)`
-   - Set buffer size for STRING returns with `.buffer_size(N)`
-   - No separate `install.sql` file is needed
-
-5. **Create tests**:
-   - Add `.test` files in `test/t/` directory
-   - Generate expected results in `test/r/` using `--record` flag
-   - Each test should install extension, test functions, and clean up
-   - Verify function behavior with various inputs
-
-## Licensing and Copyright
-
-All source code files (`.cc`, `.h`, `.cpp`, `.hpp`) and CMake files (`CMakeLists.txt`) must include the following copyright header at the top of the file:
+## Layout
 
 ```
-/* Copyright (c) 2025 VillageSQL Contributors
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <https://www.gnu.org/licenses/>.
- */
+src/
+  extension.cc          entry point: sysvar/status-var tables, capabilities, worker registration
+  scrape.h/.cc          collector registry, per-tick driver, timing, error accounting
+  collector.h           Collector/CollectorCtx types, safe column accessors, query_rows
+  metric_batch.h        MetricFamily / DataPoint / Label accumulation for one scrape
+  otlp_json.h/.cc       MetricBatch -> chunked OTLP protobuf-JSON bodies. No I/O.
+  otlp_http.h/.cc       libcurl POST and header parsing. No JSON knowledge.
+  value_parse.h/.cc     mysqld_exporter's parseStatus port, name sanitization
+  collectors/*.cc       one file per upstream mysqld_exporter collector family
+mysql-test/t, mysql-test/r   MTR suite and recorded results
 ```
 
-When creating new source files, always include this copyright block before any code or includes.
+## Build and test
 
-## Common Tasks for AI Agents
+```bash
+export VillageSQL_BUILD_DIR=/path/to/villagesql/build
+./build.sh            # produces build/vsql_metrics_otel_exporter.veb
+./test.sh             # build + run the MTR suite
+RECORD=1 ./test.sh    # regenerate mysql-test/r/*.result
+```
 
-When asked to add functionality to this template:
+Never hand-write a `.result` file — always regenerate with `RECORD=1` and read the diff.
 
-1. **Adding a new function**:
-   - Create implementation function with signature: `void func_impl(vef_context_t* ctx, [args...], vef_vdf_result_t* result)`
-   - Add function to `VEF_GENERATE_ENTRY_POINTS()` block using `.func(make_func<&func_impl>("name")...)`
-   - Specify return type, parameters, and buffer size
-   - Add to CMakeLists.txt if creating new source file
-   - Create tests
+`test.sh` auto-detects an OpenTelemetry Collector on `http://127.0.0.1:4318`. If one is running,
+`metrics_live.test` un-skips and validates the OTLP body against a real receiver; otherwise it
+skips and the suite stays hermetic. Starting one is worth it before any change to
+`otlp_json.cc` — it is the only check that a malformed body would actually be rejected.
 
-2. **Modifying build**:
-   - Edit CMakeLists.txt, ensure proper library linking
-   - Use `target_link_libraries()` for dependencies
+## Constraints that are not obvious from the code
 
-3. **Adding dependencies**:
-   - Update CMakeLists.txt with `find_package()` or `target_link_libraries()`
-   - Example: OpenSSL requires `find_package(OpenSSL REQUIRED)` and `target_link_libraries(hello PRIVATE ${OPENSSL_LIBRARIES})`
+These each have a specific failure mode. Changing code near them without knowing them will
+produce something that compiles and is wrong.
 
-4. **Testing**:
-   - Create or update `.test` files in `test/t/` directory
-   - Generate expected results in `test/r/` using `--record`
-   - Use extension name with underscores in `INSTALL EXTENSION` commands
+1. **The SDK exposes no column names**, only values by index. Collectors that cannot write their
+   own SELECT list (`SHOW REPLICA STATUS`) map columns positionally against a transcribed list
+   and guard on the column count. Do not remove those guards; a silent column shift reports
+   wrong numbers indefinitely as a successful scrape.
+2. **Never dereference the `char**` behind a string system variable.** The server frees the old
+   string on `SET GLOBAL`, so the pointer can be freed under the worker. Read strings through
+   `StringReader` (see `scrape.h`), which goes via the server's own locked reader.
+3. **Integer sysvar and status-var globals must be `long long`, not `int64_t`.** `int64_t` is
+   `long` on LP64 Linux; it compiles on macOS and fails to bind here.
+4. **`sv::make_double` fails at registration** — MySQL's component variable service has no
+   `PLUGIN_VAR_DOUBLE`, and a failed registration rolls back every variable before it. All
+   numeric knobs are integers.
+5. **No SQL is possible during `VEF_WAKEUP_ENABLE`** — the thread handle is null and the callback
+   runs on the `SET GLOBAL` caller's thread.
+6. **`sleep_ms == 0` means "keep the current interval", not "wake immediately."** The typed
+   constructor leaves it 0, whose server-side default is 24 hours, so the worker must return a
+   non-zero value from ENABLE or it never ticks.
+7. **`column_str()` is valid only until the next row.** Copy before advancing. A SQL NULL is
+   distinguishable from an empty string only by `data() == nullptr`; that is what the
+   `col_str`/`col_int`/`col_real` helpers in `collector.h` exist for, along with bounds checking
+   the SDK does not do.
+8. **Row handlers run behind a C ABI boundary.** `query_rows` wraps them so an exception cannot
+   unwind into the server. Keep it that way.
+9. **`SHOW GLOBAL STATUS`, not `performance_schema.global_status`.** The view omits every `Com_*`
+   counter — 169 of 505 rows on a stock server.
+10. **The protobuf-JSON encoding rules in `otlp_json.cc` are load-bearing**: 64-bit integers
+    (`asInt`, `timeUnixNano`, `startTimeUnixNano`) are quoted strings; doubles and enums are
+    bare. Getting one backwards is accepted by some receivers and rejected by others. The test
+    suite asserts both directions.
 
-5. **Documentation**:
-   - Update README.md to reflect new functionality
+## Adding a collector
 
-**Important Conventions:**
-- Always use underscores in extension names (not hyphens)
-- Always include proper copyright headers in source files
-- Use C++17 standard
-- Functions are registered in code using VEF API (no install.sql needed)
-- Result types: IS_VALUE, IS_NULL, IS_ERROR
+1. Add an enum entry to `CollectorIdx` and a matching row to `kCollectors[]` in `scrape.cc`,
+   keeping the two in the same order — `static_assert`s in `scrape.cc` check the correspondence.
+2. Declare the function in `collector.h`, implement it in the appropriate `collectors/*.cc`.
+3. Add a `sv::make_bool` entry in `extension.cc` using `collect_name/flag/default(idx)`, so the
+   SQL name and default come from the registry rather than being retyped.
+4. Verify every metric name and label against mysqld_exporter's source before recording results.
+   Do not reconstruct them from memory: seven names written that way during initial development
+   turned out to be wrong, three of them in cases that felt certain.
+5. Add the source file to `CMakeLists.txt` and extend the MTR suite.
+
+## Conventions
+
+- C++17. Lowercase-with-underscores for files and functions.
+- GPL-2.0 header on every `.cc`, `.h`, and `CMakeLists.txt`.
+- No `using namespace` at file scope; namespace aliases are fine.
+- Comments explain why, especially where the reason is an external constraint. Do not add
+  comments that restate the code.

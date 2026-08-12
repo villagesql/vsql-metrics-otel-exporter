@@ -47,3 +47,6 @@ build/
 # Local AGENTS files
 AGENTS.local.md
 .claude/
+
+# Captured OTLP bodies from a local collector during testing
+otel-out/

@@ -73,6 +73,12 @@ Cache Variables
   Set this variable to the SDK installation directory to override
   automatic detection.
 
+``VillageSQL_USE_DEV_HEADERS``
+  Set to ON to use the ``include-dev/`` headers instead of ``include/``.
+  Required for extensions that use pre-release ABI features (e.g.
+  ``InstallResult``, ``background_thread``, ``run_query``, ``on_change``).
+  Only meaningful when building against a VillageSQL build tree.
+
 Requirements
 ^^^^^^^^^^^^
 
@@ -100,6 +106,8 @@ if(VillageSQL_BUILD_DIR AND NOT _villagesql_found)
   # Look for staged SDK in build directory
   file(GLOB _sdk_dirs "${VillageSQL_BUILD_DIR}/villagesql-extension-sdk-*")
   if(_sdk_dirs)
+    list(FILTER _sdk_dirs EXCLUDE REGEX "\\.tar\\.gz$")
+    list(SORT _sdk_dirs ORDER DESCENDING)
     list(GET _sdk_dirs 0 _sdk_dir)
     if(EXISTS "${_sdk_dir}/include/villagesql/extension.h")
       set(VillageSQL_PREFIX "${_sdk_dir}")
@@ -226,6 +234,23 @@ if(NOT _villagesql_found)
 endif()
 
 unset(_villagesql_found)
+
+# Switch to include-dev/ if requested and available.
+option(VillageSQL_USE_DEV_HEADERS
+  "Use include-dev/ headers for pre-release ABI features" OFF)
+if(VillageSQL_USE_DEV_HEADERS AND VillageSQL_PREFIX)
+  set(_dev_include "${VillageSQL_PREFIX}/include-dev")
+  if(EXISTS "${_dev_include}/villagesql/extension.h")
+    set(VillageSQL_INCLUDE_DIR "${_dev_include}")
+    set(VillageSQL_CXX_FLAGS "-I${_dev_include}")
+    message(STATUS "VillageSQL: using dev headers at ${_dev_include}")
+  else()
+    message(WARNING
+      "VillageSQL_USE_DEV_HEADERS is ON but include-dev/ was not found at "
+      "${_dev_include}. Falling back to stable headers.")
+  endif()
+  unset(_dev_include)
+endif()
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(VillageSQL
