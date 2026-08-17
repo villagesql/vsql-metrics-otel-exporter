@@ -58,13 +58,13 @@ SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
 SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 100;
 --enable_query_log
 
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 
 --let $wait_timeout = 30
 --let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
 --source include/wait_condition.inc
 
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 
 --echo # The scrape was split into more than one request, and every request was
 --echo # accepted.

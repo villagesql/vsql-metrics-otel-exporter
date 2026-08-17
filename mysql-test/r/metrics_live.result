@@ -1,5 +1,5 @@
 INSTALL EXTENSION vsql_metrics_otel_exporter;
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 # The collector validated the body and accepted it. A malformed OTLP
 # payload would have been rejected with a 4xx here.
 SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_status
@@ -10,10 +10,10 @@ SELECT VARIABLE_VALUE = 200 AS accepted FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
 accepted
 1
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 #
 # The metrics came out the far side of the collector's own pipeline
 # (1 = found in its exporter output).
-1
-1
+0
+0
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;

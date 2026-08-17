@@ -56,6 +56,8 @@ struct Config {
   long long *http_timeout_secs;
   long long *max_datapoints_per_request;
   long long *max_body_bytes;
+  bool *prometheus_enabled;
+  long long *prometheus_port;
   long long *processlist_min_time;
   long long *eventsstatements_limit;
   long long *eventsstatements_timelimit;
@@ -79,6 +81,11 @@ struct Status {
   long long *last_scrape_error_collector;
   long long *last_datapoint_count;
   long long *chunks_last_export;
+  long long *prometheus_listening;
+  long long *prometheus_requests_total;
+  long long *prometheus_denied_total;
+  long long *prometheus_errors_total;
+  long long *prometheus_last_serve_us;
 };
 
 void init(const sq::SqlQueryCapability *cap, StringReader read_string,

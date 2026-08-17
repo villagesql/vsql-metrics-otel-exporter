@@ -67,11 +67,11 @@ SELECT VARIABLE_VALUE AS eventswaits_default
   FROM performance_schema.global_variables
   WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_perf_schema_eventswaits';
 
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 --let $wait_timeout = 30
 --let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
 --source include/wait_condition.inc
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 --exec sh -c "for i in \$(seq 1 80); do [ -s '$body_one' ] && break; sleep 0.25; done; true"
 
 --echo # Always-on collectors are present (1), wait events are not (0).
@@ -88,14 +88,14 @@ SET GLOBAL vsql_metrics_otel_exporter.collect_perf_schema_eventswaits = ON;
 --disable_query_log
 --let $exports_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'`
 --enable_query_log
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 # Waits for an export made under the new setting, not for the one the section
 # above already counted.
 --let $wait_timeout = 30
 --let $wait_condition = SELECT VARIABLE_VALUE > $exports_before FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
 --source include/wait_condition.inc
 --exec sh -c "for i in \$(seq 1 80); do [ -s '$body_two' ] && break; sleep 0.25; done; true"
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 
 --echo # The same collectors as before, plus wait events (1 each).
 --exec sh -c "grep -c '\"name\":\"mysql_global_status_commands_total\"' $body_two; true"

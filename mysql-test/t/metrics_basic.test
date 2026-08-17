@@ -23,7 +23,7 @@ SELECT VARIABLE_NAME FROM performance_schema.global_status
 --echo # The background worker stays off until it is switched on explicitly.
 SELECT VARIABLE_VALUE AS enabled_by_default
   FROM performance_schema.global_variables
-  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_enabled';
 
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;
 

@@ -3,7 +3,7 @@ INSTALL EXTENSION vsql_metrics_otel_exporter;
 # variable accepts any string -- it is parsed on the export path -- so the
 # rejection has to be observed there.
 SET GLOBAL vsql_metrics_otel_exporter.otlp_headers = 'ThisHasNoEqualsSign';
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 # The body was never put on the wire: no transport error and no HTTP
 # status were recorded, which is only true if the export stopped before
 # the request was built. Had the parsing been skipped, the request would
@@ -17,11 +17,11 @@ SELECT VARIABLE_VALUE = 0 AS no_http_status FROM performance_schema.global_statu
 WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
 no_http_status
 1
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 #
 # With a well-formed list the export proceeds to the request, and now
 # fails on the unreachable endpoint instead.
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 # A connection failure is a transport error with no HTTP status, since no
 # response was ever received.
 SELECT VARIABLE_VALUE > 0 AS transport_error_recorded FROM performance_schema.global_status
@@ -47,13 +47,13 @@ no_collector_failed
 # And the worker keeps going: scrapes continue past the failed exports.
 worker_still_running
 1
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 #
 # An empty endpoint parks the exporter rather than failing it: the worker
 # keeps scraping and simply sends nothing, so the error count does not
 # move.
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 no_new_export_errors
 1
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;

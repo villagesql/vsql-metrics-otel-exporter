@@ -26,8 +26,10 @@
 #include <string_view>
 #include <vector>
 
+#include "http_endpoint.h"
 #include "otlp_http.h"
 #include "otlp_json.h"
+#include "prom_text.h"
 
 namespace vsql_metrics {
 namespace scrape {
@@ -114,6 +116,17 @@ std::uint64_t g_process_start_ns = 0;
 // over. Read from the server rather than assumed, because it is the server that
 // owns the counters -- see resolve_server_start below.
 std::uint64_t g_server_start_ns = 0;
+
+// Wall clock of the last completed OTLP export. The push cadence is driven off
+// this rather than off VEF_WAKEUP_PERIODIC, because a poll-fd wakeup restarts
+// the worker's sleep: with a scraper connecting more often than the export
+// interval, the periodic wakeup never arrives and a push keyed to it would
+// never happen. Measured against a running server, a request every second
+// against a two-second timer produced zero periodic wakeups in ten seconds.
+std::uint64_t g_last_push_ns = 0;
+
+// The /metrics listener, or -1. Owned by the worker thread.
+int g_listen_fd = -1;
 
 // Identifies this exporter as the OTLP instrumentation scope. The version is
 // kept in step with manifest.json by hand; it names the producer of the
@@ -257,10 +270,11 @@ void export_batch(const MetricBatch &batch, std::uint64_t now_ns) {
   }
 }
 
-void run_tick(struct vef_thread_handle_t *handle) {
-  const std::uint64_t now_ns = wall_unix_nano();
-  const auto started = std::chrono::steady_clock::now();
-
+// Reads the server into `batch`. Shared by both endpoints, so the push and the
+// pull path can never disagree about names, labels or values -- they differ
+// only in how the same batch is serialized.
+void collect(struct vef_thread_handle_t *handle, MetricBatch &batch,
+             std::uint64_t now_ns, long long *failed_collector_out) {
   ScrapeConfig sc;
   // processlist_min_time is the one tunable whose range starts at 0, and 0 is
   // meaningful (count every thread), so it is read directly.
@@ -269,7 +283,6 @@ void run_tick(struct vef_thread_handle_t *handle) {
   sc.stmt_timelimit = cfg_int(g_cfg.eventsstatements_timelimit);
   sc.stmt_digest_text_limit = cfg_int(g_cfg.eventsstatements_digest_text_limit);
 
-  MetricBatch batch;
   long long failed_collector = 0;
 
   // One session for the whole tick. A collector whose statement errors does not
@@ -322,6 +335,23 @@ void run_tick(struct vef_thread_handle_t *handle) {
     }
   }
 
+  if (batch.kind_conflicts() > 0) {
+    log_rate_limited("two collectors emitted the same metric name with "
+                     "different types; some data points were serialized using "
+                     "the first collector's type");
+  }
+  *failed_collector_out = failed_collector;
+}
+
+// The push path: collect, then export over OTLP.
+void run_tick(struct vef_thread_handle_t *handle) {
+  const std::uint64_t now_ns = wall_unix_nano();
+  const auto started = std::chrono::steady_clock::now();
+
+  MetricBatch batch;
+  long long failed_collector = 0;
+  collect(handle, batch, now_ns, &failed_collector);
+
   // Measured before the export: this is how long reading the server took, not
   // how long the collector took to answer. Otherwise an unreachable endpoint
   // would report a multi-second "scrape" that in fact took milliseconds.
@@ -336,13 +366,101 @@ void run_tick(struct vef_thread_handle_t *handle) {
   store(g_st.last_scrape_utime, static_cast<long long>(now_ns / 1000));
   add(g_st.scrapes_total, 1);
 
-  if (batch.kind_conflicts() > 0) {
-    log_rate_limited("two collectors emitted the same metric name with "
-                     "different types; some data points were serialized using "
-                     "the first collector's type");
+  export_batch(batch, now_ns);
+  g_last_push_ns = now_ns;
+}
+
+// The pull path: collect and answer one scraper, in Prometheus text.
+//
+// Runs on the worker thread, so it is bounded at every step -- the export
+// cannot proceed while this is in progress.
+void serve_scrape(struct vef_thread_handle_t *handle, int client_fd) {
+  const auto started = std::chrono::steady_clock::now();
+
+  const http_endpoint::Route route =
+      http_endpoint::read_request(client_fd, cfg_str("prometheus_auth_token"));
+
+  if (route == http_endpoint::Route::kUnauthorized) {
+    add(g_st.prometheus_denied_total, 1);
+    http_endpoint::respond_status(client_fd, 401, "Unauthorized");
+    return;
+  }
+  if (route == http_endpoint::Route::kNotFound) {
+    http_endpoint::respond_status(client_fd, 404, "Not Found");
+    return;
   }
 
-  export_batch(batch, now_ns);
+  MetricBatch batch;
+  long long failed_collector = 0;
+  collect(handle, batch, wall_unix_nano(), &failed_collector);
+
+  const std::string body = prom_text::serialize(batch);
+  http_endpoint::respond_metrics(client_fd, body);
+
+  add(g_st.prometheus_requests_total, 1);
+  add(g_st.scrapes_total, 1);
+  store(g_st.last_scrape_error_collector, failed_collector);
+  store(g_st.last_datapoint_count, static_cast<long long>(batch.point_count()));
+  store(g_st.prometheus_last_serve_us,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+}
+
+// Opens or closes the listener to match the current configuration. Returns the
+// value to report as poll_fd: a new descriptor when one was just opened, -1 to
+// clear a closed one, and 0 to leave the current registration alone.
+int reconcile_listener() {
+  const bool wanted = (g_cfg.prometheus_enabled != nullptr) &&
+                      *g_cfg.prometheus_enabled;
+
+  if (wanted && g_listen_fd < 0) {
+    std::string bind_address = cfg_str("prometheus_bind_address");
+    if (bind_address.empty()) bind_address = "127.0.0.1";
+    std::string error;
+    const int fd = http_endpoint::open_listener(
+        bind_address, static_cast<int>(cfg_int(g_cfg.prometheus_port)), &error);
+    if (fd < 0) {
+      add(g_st.prometheus_errors_total, 1);
+      log_rate_limited("prometheus endpoint: " + error);
+      return 0;
+    }
+    g_listen_fd = fd;
+    store(g_st.prometheus_listening, 1);
+    return fd;
+  }
+
+  if (!wanted && g_listen_fd >= 0) {
+    http_endpoint::close_listener(g_listen_fd);
+    g_listen_fd = -1;
+    store(g_st.prometheus_listening, 0);
+    return -1;  // -1 clears the registration; 0 would leave a dead fd polled
+  }
+  return 0;
+}
+
+// Whether an export is due. Kept separate from the sleep calculation below:
+// folding the two together made "never pushed yet" indistinguishable from "a
+// full interval remains", so the very first push never happened and the push
+// path stayed dead for the life of the process.
+bool push_due(unsigned int interval_ms) {
+  if (g_last_push_ns == 0) return true;  // nothing exported yet -- due now
+  const std::uint64_t now_ns = wall_unix_nano();
+  if (now_ns <= g_last_push_ns) return false;
+  return (now_ns - g_last_push_ns) / 1000000ull >= interval_ms;
+}
+
+// Milliseconds until the next export is due. Returning the whole interval on
+// every wakeup would let frequent scrapes push the export indefinitely into the
+// future, so what is returned is the time remaining, never zero (which the
+// server reads as "keep the current interval").
+unsigned int sleep_until_next_push(unsigned int interval_ms) {
+  if (g_last_push_ns == 0) return 1;
+  const std::uint64_t now_ns = wall_unix_nano();
+  if (now_ns <= g_last_push_ns) return interval_ms;
+  const std::uint64_t elapsed_ms = (now_ns - g_last_push_ns) / 1000000ull;
+  if (elapsed_ms >= interval_ms) return 1;
+  return static_cast<unsigned int>(interval_ms - elapsed_ms);
 }
 
 // The scrape itself. Kept separate from on_wakeup so the exception guard there
@@ -357,23 +475,57 @@ vef_next_wakeup_t run_wakeup(vef_wakeup_reason_t reason,
 
   if (reason == VEF_WAKEUP_ENABLE) {
     // The handle is null here and this runs on the SET GLOBAL caller's thread,
-    // so no SQL is possible. Setup only.
+    // so no SQL is possible. Setup only -- but the socket does belong here: the
+    // server calls ENABLE synchronously so that a bind failure can be reported
+    // before SET GLOBAL returns instead of being discovered later.
     otlp_http::global_init();
     if (g_process_start_ns == 0) g_process_start_ns = wall_unix_nano();
-    // Returning 0 would leave the server's 24h default in place. Coming back
-    // quickly also means a freshly enabled exporter produces data immediately
-    // rather than after a full interval.
+    // The listener is NOT opened here, even though the SDK invites it: ENABLE
+    // runs inside the SET GLOBAL that switched the worker on, and that
+    // statement already holds LOCK_global_system_variables. Opening the socket
+    // needs prometheus_bind_address, reading a string system variable goes
+    // through the server's component reader, and that reader takes the same
+    // lock -- which self-deadlocks the connection and, because every new
+    // session reads system variables, takes the whole server with it. Observed
+    // exactly that way: SET GLOBAL never returned and the server had to be
+    // killed. The socket is opened on the first worker wakeup instead, 250ms
+    // later, off that thread and outside the lock.
+    //
+    // The cost is that a bind failure is no longer reported by SET GLOBAL. It
+    // surfaces in prometheus_errors_total, prometheus_listening and the error
+    // log.
     return {std::min<unsigned int>(interval, 250u), 0};
   }
 
   if (reason == VEF_WAKEUP_DISABLE) {
     // No final export: DISABLE also fires on server shutdown, where a blocking
     // HTTP request would stall it for up to http_timeout_secs.
+    if (g_listen_fd >= 0) {
+      http_endpoint::close_listener(g_listen_fd);
+      g_listen_fd = -1;
+      store(g_st.prometheus_listening, 0);
+    }
     return {};
   }
 
-  if (g_cap != nullptr && handle != nullptr) run_tick(handle);
-  return {interval, 0};
+  if (g_cap == nullptr || handle == nullptr) return {interval, 0};
+
+  if (reason == VEF_WAKEUP_POLL_FD) {
+    const int client = http_endpoint::accept_client(g_listen_fd);
+    if (client >= 0) {
+      serve_scrape(handle, client);
+      http_endpoint::close_listener(client);
+    }
+  }
+
+  // Both wakeup kinds fall through to here, so the export keeps its cadence
+  // however often scrapers connect.
+  if (push_due(interval)) run_tick(handle);
+
+  // Picks up a prometheus_enabled or port change without needing the worker
+  // restarted; on a poll-fd wakeup this is normally a no-op returning 0.
+  const int poll_fd = reconcile_listener();
+  return {sleep_until_next_push(interval), poll_fd};
 }
 
 }  // namespace

@@ -1,0 +1,161 @@
+# The Prometheus pull endpoint: GET /metrics served from the same collectors
+# that feed the OTLP push, in text exposition format.
+#
+# The first assertion in this file is that it runs at all. Enabling the worker
+# is what opens the listener, and an earlier version of that path read a string
+# system variable from inside the ENABLE callback -- which the server invokes
+# while it still holds the lock that reading one takes. SET GLOBAL never
+# returned and the whole server had to be killed. Every statement below is
+# ordinary, and that is the point: if enabling ever deadlocks again, this test
+# hangs instead of the failure reaching anyone.
+
+--source include/not_windows.inc
+
+--let $port = 19105
+--let $probe = $MYSQLTEST_VARDIR/tmp/prom_probe.py
+
+# All matching happens in here rather than in the shell: patterns anchored with
+# regex metacharacters do not survive mysqltest's --exec intact.
+#
+# "status" prints an HTTP status, 0 when the connection is refused.
+# "checks" prints one 0/1 line per property, in a fixed order, so the recorded
+# output never contains a live metric value.
+--write_file $probe
+import sys, urllib.error, urllib.request
+
+def fetch(url, token):
+    req = urllib.request.Request(url)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+    except Exception:
+        return 0, ""
+
+mode, url = sys.argv[1], sys.argv[2]
+token = sys.argv[3] if len(sys.argv) > 3 else ""
+status, body = fetch(url, token)
+
+if mode == "status":
+    print(status)
+    sys.exit(0)
+
+lines = body.splitlines()
+exact = set(lines)
+types = [l.split()[2] for l in lines if l.startswith("# TYPE ")]
+
+def has_prefix(p):
+    return any(l.startswith(p) for l in lines)
+
+# mysqld_exporter's spelling, which existing dashboards depend on.
+print(1 if "mysql_up 1" in exact else 0)
+print(1 if has_prefix('mysql_global_status_commands_total{command="select"}') else 0)
+print(1 if "# TYPE mysql_global_status_commands_total counter" in exact else 0)
+# Types describe behaviour, not the name: the innodb_cmpmem page counts rise and
+# fall despite the _total suffix upstream gave them, while the relocation
+# counters beside them really do accumulate.
+print(1 if "# TYPE mysql_info_schema_innodb_cmpmem_pages_used_total gauge" in exact else 0)
+print(1 if "# TYPE mysql_info_schema_innodb_cmpmem_relocation_ops_total counter" in exact else 0)
+# A repeated TYPE line for one metric name makes a scraper reject the body.
+print(len(types) - len(set(types)))
+# Every sample line must parse as name[{labels}] <number>.
+bad = 0
+for line in lines:
+    if not line or line.startswith("#"):
+        continue
+    head, sep, value = line.rpartition(" ")
+    if not sep or not head:
+        bad += 1
+        continue
+    try:
+        float(value)
+    except ValueError:
+        if value not in ("NaN", "+Inf", "-Inf"):
+            bad += 1
+print(bad)
+EOF
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+# Empty endpoint: this test exercises the pull path, so nothing is pushed.
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = '';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+--replace_result $port PROM_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.prometheus_port = $port;
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_bind_address = '127.0.0.1';
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = ON;
+--enable_query_log
+
+--echo # Enabling the worker must return rather than hang. The listener is opened
+--echo # on the first wakeup that follows, not inside this statement.
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE = 1 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_listening'
+--source include/wait_condition.inc
+
+--echo #
+--echo # The endpoint is up and no bind error was recorded.
+SELECT VARIABLE_VALUE = 1 AS listening FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_listening';
+SELECT VARIABLE_VALUE = 0 AS no_bind_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_errors_total';
+
+--echo #
+--echo # GET /metrics answers 200; any other path is 404.
+--exec python3 $probe status http://127.0.0.1:$port/metrics
+--exec python3 $probe status http://127.0.0.1:$port/nope
+
+--echo #
+--echo # Body checks, in order: mysql_up present, the commands_total series with
+--echo # its command label, that series typed counter, innodb_cmpmem page counts
+--echo # typed gauge, relocation counts typed counter, then two counts that must
+--echo # be zero -- duplicate TYPE declarations, and unparseable sample lines.
+--echo # expect: 1 1 1 1 1 0 0
+--exec python3 $probe checks http://127.0.0.1:$port/metrics
+
+--echo #
+--echo # With a token set, an unauthenticated scrape is refused (401) and an
+--echo # authenticated one is served (200).
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_auth_token = 'test_token';
+--enable_query_log
+--exec python3 $probe status http://127.0.0.1:$port/metrics
+--exec python3 $probe status http://127.0.0.1:$port/metrics wrong_token
+--exec python3 $probe status http://127.0.0.1:$port/metrics test_token
+SELECT VARIABLE_VALUE > 0 AS denials_counted FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_denied_total';
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_auth_token = '';
+--enable_query_log
+
+--echo #
+--echo # The endpoint closes and reopens while the worker keeps running.
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = OFF;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE = 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_listening'
+--source include/wait_condition.inc
+--echo # nothing listening (0 = connection refused):
+--exec python3 $probe status http://127.0.0.1:$port/metrics
+
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE = 1 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_listening'
+--source include/wait_condition.inc
+--echo # serving again:
+--exec python3 $probe status http://127.0.0.1:$port/metrics
+
+--echo #
+--echo # Serving a scrape is a real read of the server, not a replay of the last
+--echo # pushed batch.
+SELECT VARIABLE_VALUE > 0 AS scrapes_recorded FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_requests_total';
+
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--remove_file $probe

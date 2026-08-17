@@ -21,7 +21,6 @@ vsql_metrics_otel_exporter.collect_perf_schema_stmt_sum	OFF
 vsql_metrics_otel_exporter.collect_perf_schema_tableiowaits	OFF
 vsql_metrics_otel_exporter.collect_perf_schema_tablelocks	OFF
 vsql_metrics_otel_exporter.collect_slave_status	ON
-vsql_metrics_otel_exporter.enabled	OFF
 vsql_metrics_otel_exporter.eventsstatements_digest_text_limit	120
 vsql_metrics_otel_exporter.eventsstatements_limit	250
 vsql_metrics_otel_exporter.eventsstatements_timelimit	86400
@@ -32,6 +31,11 @@ vsql_metrics_otel_exporter.max_datapoints_per_request	2000
 vsql_metrics_otel_exporter.otlp_endpoint	http://localhost:4318
 vsql_metrics_otel_exporter.otlp_headers	
 vsql_metrics_otel_exporter.processlist_min_time	0
+vsql_metrics_otel_exporter.prometheus_auth_token	
+vsql_metrics_otel_exporter.prometheus_bind_address	127.0.0.1
+vsql_metrics_otel_exporter.prometheus_enabled	OFF
+vsql_metrics_otel_exporter.prometheus_port	9104
+vsql_metrics_otel_exporter.scrape_enabled	OFF
 vsql_metrics_otel_exporter.service_instance_id	
 vsql_metrics_otel_exporter.service_name	villagesql
 #
@@ -53,13 +57,18 @@ vsql_metrics_otel_exporter.last_export_http_status
 vsql_metrics_otel_exporter.last_scrape_duration_us
 vsql_metrics_otel_exporter.last_scrape_error_collector
 vsql_metrics_otel_exporter.last_scrape_utime
+vsql_metrics_otel_exporter.prometheus_denied_total
+vsql_metrics_otel_exporter.prometheus_errors_total
+vsql_metrics_otel_exporter.prometheus_last_serve_us
+vsql_metrics_otel_exporter.prometheus_listening
+vsql_metrics_otel_exporter.prometheus_requests_total
 vsql_metrics_otel_exporter.scrape_errors_total
 vsql_metrics_otel_exporter.scrapes_total
 #
 # The background worker stays off until it is switched on explicitly.
 SELECT VARIABLE_VALUE AS enabled_by_default
 FROM performance_schema.global_variables
-WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_enabled';
 enabled_by_default
 OFF
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;

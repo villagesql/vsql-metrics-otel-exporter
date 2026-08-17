@@ -8,7 +8,7 @@ stays_off_exists
 ENABLED
 NO
 INSTALL EXTENSION vsql_metrics_otel_exporter;
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 #
 # Wait events are being exported (1), but neither disabled instrument is
 # among them -- checked per metric, so 0 0 0 0.
@@ -23,7 +23,7 @@ SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
 # routes the next body to a second file.
 # The worker never stopped:
 SELECT VARIABLE_VALUE AS still_enabled FROM performance_schema.global_variables
-WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_enabled';
 still_enabled
 ON
 #
@@ -44,5 +44,5 @@ ON
 # counters all accumulate over a single window, the server's uptime
 # (1 = exactly one distinct start timestamp in the body).
 1
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;

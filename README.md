@@ -14,6 +14,7 @@ database credentials, no extra network path — the server exports its own metri
 - [Installing](#installing)
 - [Uninstalling](#uninstalling)
 - [Configuration](#configuration)
+- [The Prometheus endpoint](#the-prometheus-endpoint)
 - [Collectors](#collectors)
 - [Metric reference](#metric-reference)
 - [Security considerations](#security-considerations)
@@ -74,7 +75,7 @@ INSTALL EXTENSION vsql_metrics_otel_exporter;
 
 SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:4318';
 SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 2000;  -- set BEFORE enabling
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 ```
 
 **5. Confirm it is working.**
@@ -98,8 +99,8 @@ SET GLOBAL vsql_metrics_otel_exporter.collect_info_schema_innodb_metrics = ON;
 ```
 
 > **Set `export_interval_ms` before enabling the worker.** It is read at the *end* of each tick,
-> so changing it from an hour to a second takes up to an hour to apply. Toggling `enabled` off
-> and on applies it immediately.
+> so changing it from an hour to a second takes up to an hour to apply. Toggling
+> `scrape_enabled` off and on applies it immediately.
 
 ## Building
 
@@ -150,7 +151,7 @@ Copy the `.veb` into the server's `veb_dir`, then:
 INSTALL EXTENSION vsql_metrics_otel_exporter;
 
 SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://collector:4318';
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 ```
 
 `/v1/metrics` is appended to `otlp_endpoint`. That is the whole quick start — with the default
@@ -181,7 +182,7 @@ The metric names arrive already in mysqld_exporter's spelling, so nothing needs 
 ## Uninstalling
 
 ```sql
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;
 ```
 
@@ -205,7 +206,7 @@ All variables are prefixed `vsql_metrics_otel_exporter.`.
 
 | Variable | Default | Range | Purpose |
 |---|---|---|---|
-| `enabled` | `OFF` | | Start and stop the background worker |
+| `scrape_enabled` | `OFF` | | Start and stop the background worker |
 | `otlp_endpoint` | `http://localhost:4318` | | Collector base URL; empty stops sending without stopping scraping |
 | `otlp_headers` | *(empty)* | | Extra HTTP headers, `Key=Value` comma separated |
 | `service_name` | `villagesql` | | OTLP resource attribute `service.name` |
@@ -218,6 +219,10 @@ All variables are prefixed `vsql_metrics_otel_exporter.`.
 | `eventsstatements_limit` | `250` | 1–10000 | Maximum statement digests per scrape |
 | `eventsstatements_timelimit` | `86400` | 1–604800 | Only report digests seen within this many seconds |
 | `eventsstatements_digest_text_limit` | `120` | 1–4096 | Truncate `digest_text` label values |
+| `prometheus_enabled` | `OFF` | | Serve Prometheus text metrics on `GET /metrics` |
+| `prometheus_port` | `9104` | 1024–65535 | TCP port for the endpoint |
+| `prometheus_bind_address` | `127.0.0.1` | | IPv4 address to bind |
+| `prometheus_auth_token` | *(empty)* | | If set, `/metrics` requires `Authorization: Bearer <token>` |
 
 Plus one `collect_*` switch per collector — see below.
 
@@ -235,6 +240,50 @@ SET GLOBAL vsql_metrics_otel_exporter.otlp_headers  = 'Authorization=Bearer TOKE
 ```
 
 Read [Security considerations](#security-considerations) before doing this.
+
+## The Prometheus endpoint
+
+Besides pushing OTLP, the exporter can serve the same metrics for scraping, in Prometheus text
+exposition format. Both run off one background thread and one set of collectors, so the names,
+labels and values are identical whichever way you read them.
+
+```sql
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_port    = 9104;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled     = ON;
+```
+
+```bash
+curl http://127.0.0.1:9104/metrics
+```
+
+The listener opens on the first worker wakeup, within a fraction of a second of enabling, not
+inside the `SET GLOBAL` itself. Check `prometheus_listening` to confirm it came up; if a bind
+fails, `prometheus_errors_total` increments and the reason is in the server error log.
+
+Each scrape performs a fresh read of the server — nothing is served from the last pushed batch.
+`prometheus_requests_total` counts scrapes served; `exports_total` counts OTLP pushes. They are
+independent, and scraping frequently does not delay the push: an export that comes due is
+carried by whichever wakeup happens next, scrape or timer.
+
+To use pull only, leave `otlp_endpoint` empty. The worker then scrapes solely on demand.
+
+Point Prometheus at it with a normal scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: villagesql
+    static_configs:
+      - targets: ['db-host:9104']
+    # if prometheus_auth_token is set:
+    # authorization:
+    #   credentials: your-token
+```
+
+Types are reported from how each value behaves, not from its name. A few metrics carry a
+`_total` suffix that mysqld_exporter gave them while typing them as counters even though the
+underlying value rises and falls — `innodb_cmpmem` page counts, for instance. The names are kept
+for compatibility; the `# TYPE` line says `gauge`, which is what they are.
 
 ## Collectors
 
