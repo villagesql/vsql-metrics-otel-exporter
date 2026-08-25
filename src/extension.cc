@@ -60,6 +60,11 @@ long long g_http_timeout_secs = 10;
 long long g_max_datapoints_per_request = 2000;
 long long g_max_body_bytes = 4 * 1024 * 1024;
 
+bool g_prometheus_enabled = false;
+long long g_prometheus_port = 9104;
+char *g_prometheus_bind_address = nullptr;
+char *g_prometheus_auth_token = nullptr;
+
 long long g_processlist_min_time = 0;
 long long g_eventsstatements_limit = 250;
 long long g_eventsstatements_timelimit = 86400;
@@ -96,6 +101,21 @@ auto SYS_VARS = sv::make_capability({
     sv::make_int("max_body_bytes",
                  "Size backstop for one export request body (bytes)",
                  &g_max_body_bytes, 4 * 1024 * 1024, 65536, 134217728),
+
+    // The pull endpoint. Off by default: it opens a listening socket in the
+    // server process, which is a change in exposure that should be opted into
+    // rather than inherited.
+    sv::make_bool("prometheus_enabled",
+                  "Serve Prometheus text metrics on GET /metrics",
+                  &g_prometheus_enabled, false),
+    sv::make_int("prometheus_port", "TCP port for the /metrics endpoint",
+                 &g_prometheus_port, 9104, 1024, 65535),
+    sv::make_str("prometheus_bind_address",
+                 "IPv4 address to bind the /metrics endpoint to",
+                 &g_prometheus_bind_address, "127.0.0.1"),
+    sv::make_str("prometheus_auth_token",
+                 "If set, /metrics requires Authorization: Bearer <token>",
+                 &g_prometheus_auth_token, ""),
 
     // One toggle per collector, mirroring mysqld_exporter's --collect.* flags.
     // Its flag names contain dots, which a sysvar name cannot, so
@@ -198,6 +218,11 @@ long long g_last_export_curl_errno = 0;
 long long g_last_scrape_error_collector = 0;
 long long g_last_datapoint_count = 0;
 long long g_chunks_last_export = 0;
+long long g_prometheus_listening = 0;
+long long g_prometheus_requests_total = 0;
+long long g_prometheus_denied_total = 0;
+long long g_prometheus_errors_total = 0;
+long long g_prometheus_last_serve_us = 0;
 
 auto STATUS_VARS = stv::make_capability({
     stv::make_int("scrapes_total", &g_scrapes_total),
@@ -213,6 +238,11 @@ auto STATUS_VARS = stv::make_capability({
     stv::make_int("last_scrape_error_collector", &g_last_scrape_error_collector),
     stv::make_int("last_datapoint_count", &g_last_datapoint_count),
     stv::make_int("chunks_last_export", &g_chunks_last_export),
+    stv::make_int("prometheus_listening", &g_prometheus_listening),
+    stv::make_int("prometheus_requests_total", &g_prometheus_requests_total),
+    stv::make_int("prometheus_denied_total", &g_prometheus_denied_total),
+    stv::make_int("prometheus_errors_total", &g_prometheus_errors_total),
+    stv::make_int("prometheus_last_serve_us", &g_prometheus_last_serve_us),
 });
 
 sq::SqlQueryCapability SQL_QUERY;
@@ -233,6 +263,7 @@ const bool g_inited = [] {
   scrape::init(&SQL_QUERY, &read_string_var,
                scrape::Config{&g_export_interval_ms, &g_http_timeout_secs,
                               &g_max_datapoints_per_request, &g_max_body_bytes,
+                              &g_prometheus_enabled, &g_prometheus_port,
                               &g_processlist_min_time,
                               &g_eventsstatements_limit,
                               &g_eventsstatements_timelimit,
@@ -245,7 +276,12 @@ const bool g_inited = [] {
                               &g_last_export_http_status,
                               &g_last_export_curl_errno,
                               &g_last_scrape_error_collector,
-                              &g_last_datapoint_count, &g_chunks_last_export});
+                              &g_last_datapoint_count, &g_chunks_last_export,
+                              &g_prometheus_listening,
+                              &g_prometheus_requests_total,
+                              &g_prometheus_denied_total,
+                              &g_prometheus_errors_total,
+                              &g_prometheus_last_serve_us});
   return true;
 }();
 
@@ -254,9 +290,15 @@ vef_next_wakeup_t scrape_worker(vef_wakeup_reason_t reason,
   return scrape::on_wakeup(reason, thread);
 }
 
-// The second argument names the boolean sysvar that switches the worker on.
-// The capability registers it itself, so it must not appear in SYS_VARS.
-tw::ThreadWorkerCapability<&scrape_worker> WORKER{"scrape", "enabled"};
+// The second argument names the boolean sysvar that switches the worker on. The
+// capability registers it itself, so it must not appear in SYS_VARS.
+//
+// Deliberately not called "enabled". The server matches a worker to its switch
+// by the UNQUALIFIED variable name (services/preview/thread_worker.cc:351-364),
+// so two installed extensions that both call theirs "enabled" silently drive
+// each other's worker -- observed directly against a running server. A
+// distinctive name is the only defence available from this side.
+tw::ThreadWorkerCapability<&scrape_worker> WORKER{"scrape", "scrape_enabled"};
 
 }  // namespace
 

@@ -1,5 +1,5 @@
 INSTALL EXTENSION vsql_metrics_otel_exporter;
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 # The collector accepted the export, and no collector failed on the way.
 SELECT VARIABLE_VALUE > 0 AS exported FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total';
@@ -17,7 +17,7 @@ SELECT VARIABLE_VALUE = 200 AS http_ok FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
 http_ok
 1
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 #
 # Envelope: one resourceMetrics, one scopeMetrics, at least one dataPoints
 # array (1 = present).

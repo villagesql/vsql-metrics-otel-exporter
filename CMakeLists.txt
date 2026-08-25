@@ -39,6 +39,8 @@ add_library(vsql_metrics_otel_exporter SHARED
     src/otlp_json.cc
     src/otlp_http.cc
     src/value_parse.cc
+    src/prom_text.cc
+    src/http_endpoint.cc
     src/collectors/global_status.cc
     src/collectors/global_variables.cc
     src/collectors/replica_status.cc

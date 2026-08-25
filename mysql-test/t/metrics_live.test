@@ -30,7 +30,7 @@ SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 10;
 SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_metrics_live_marker';
 --enable_query_log
 
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 
 --let $wait_timeout = 30
 --let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
@@ -43,7 +43,7 @@ SELECT VARIABLE_VALUE = 0 AS no_export_errors FROM performance_schema.global_sta
 SELECT VARIABLE_VALUE = 200 AS accepted FROM performance_schema.global_status
   WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.last_export_http_status';
 
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 
 --echo #
 --echo # The metrics came out the far side of the collector's own pipeline

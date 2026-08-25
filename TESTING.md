@@ -102,7 +102,7 @@ invisible to every other test.
 INSTALL EXTENSION vsql_metrics_otel_exporter;
 SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:4318';
 SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 2000;  -- before enabling
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 
 SHOW GLOBAL STATUS LIKE 'vsql_metrics_otel_exporter.%';
 ```

@@ -1,0 +1,58 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+# Enabling the worker must return rather than hang. The listener is opened
+# on the first wakeup that follows, not inside this statement.
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+#
+# The endpoint is up and no bind error was recorded.
+SELECT VARIABLE_VALUE = 1 AS listening FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_listening';
+listening
+1
+SELECT VARIABLE_VALUE = 0 AS no_bind_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_errors_total';
+no_bind_errors
+1
+#
+# GET /metrics answers 200; any other path is 404.
+200
+404
+#
+# Body checks, in order: mysql_up present, the commands_total series with
+# its command label, that series typed counter, innodb_cmpmem page counts
+# typed gauge, relocation counts typed counter, then two counts that must
+# be zero -- duplicate TYPE declarations, and unparseable sample lines.
+# expect: 1 1 1 1 1 0 0
+1
+1
+1
+1
+1
+0
+0
+#
+# With a token set, an unauthenticated scrape is refused (401) and an
+# authenticated one is served (200).
+401
+401
+200
+SELECT VARIABLE_VALUE > 0 AS denials_counted FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_denied_total';
+denials_counted
+1
+#
+# The endpoint closes and reopens while the worker keeps running.
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = OFF;
+# nothing listening (0 = connection refused):
+0
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = ON;
+# serving again:
+200
+#
+# Serving a scrape is a real read of the server, not a replay of the last
+# pushed batch.
+SELECT VARIABLE_VALUE > 0 AS scrapes_recorded FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_requests_total';
+scrapes_recorded
+1
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

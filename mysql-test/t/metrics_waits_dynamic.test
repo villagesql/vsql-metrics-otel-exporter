@@ -115,7 +115,7 @@ SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_waits_before';
 --enable_query_log
 
 # Switched on once. It stays on until the assertions are done.
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 
 --let $wait_timeout = 30
 --let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
@@ -142,7 +142,7 @@ SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_waits_after';
 
 --echo # The worker never stopped:
 SELECT VARIABLE_VALUE AS still_enabled FROM performance_schema.global_variables
-  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.enabled';
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_enabled';
 
 # Waits for an export made after the instrument was enabled, not for one the
 # section above already counted.
@@ -173,7 +173,7 @@ SELECT VARIABLE_VALUE AS still_enabled FROM performance_schema.global_variables
 --echo # (1 = exactly one distinct start timestamp in the body).
 --exec sh -c "grep -Eo '\"startTimeUnixNano\":\"[0-9]+\"' $body_after | sort -u | wc -l | tr -d ' '; true"
 
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 
 UNINSTALL EXTENSION vsql_metrics_otel_exporter;
 

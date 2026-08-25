@@ -1,6 +1,6 @@
 INSTALL EXTENSION vsql_metrics_otel_exporter;
-SET GLOBAL vsql_metrics_otel_exporter.enabled = ON;
-SET GLOBAL vsql_metrics_otel_exporter.enabled = OFF;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 # The scrape was split into more than one request, and every request was
 # accepted.
 SELECT VARIABLE_VALUE > 1 AS split_into_chunks FROM performance_schema.global_status
