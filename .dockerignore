@@ -1,0 +1,10 @@
+# The image builds from source inside the builder stage; a host build tree would
+# only bloat the context (and its .veb is never the one that gets installed).
+build/
+otel-out/
+.git/
+.github/
+.claude/
+mysql-test/
+test/
+*.md
