@@ -4,18 +4,28 @@
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
 
-# A VillageSQL server image with vsql_metrics_otel_exporter installed and
-# scraping on its own from first start.
+# A VillageSQL server image with vsql_metrics_otel_exporter installed, scraping,
+# and serving Prometheus text on :9104 from first start.
 #
 #   docker build -t villagesql-metrics .
 #   docker run --rm -e MYSQL_ROOT_PASSWORD=secret \
-#              -e VSQL_METRICS_OTEL_ENDPOINT=http://otel-collector:4318 \
-#              -p 3306:3306 villagesql-metrics
+#              -p 3306:3306 -p 9104:9104 villagesql-metrics
 #
-# VSQL_METRICS_OTEL_ENDPOINT is optional and read once, when the datadir is
-# first initialized; without it the extension's own default endpoint
-# (http://localhost:4318) applies. Everything else stays at its default,
-# including the collector set and the pull endpoint (off).
+# The pull endpoint is the default because it is the half that works against a
+# Prometheus-family scraper with nothing deployed in between. The OTLP push is
+# opt-in via VSQL_METRICS_OTEL_ENDPOINT, and needs a receiver that accepts
+# protobuf-JSON: an OpenTelemetry Collector does, and VictoriaMetrics' own
+# /opentelemetry/v1/metrics does not ("json encoding isn't supported for
+# opentelemetry format"), so pointing this at a vmsingle will not work.
+#
+# All of it is read once, when the datadir is first initialized. The knobs, each
+# defaulted in docker/vsql-metrics-init.sh:
+#
+#   VSQL_METRICS_OTEL_ENDPOINT             unset -> push disabled
+#   VSQL_METRICS_PROMETHEUS_ENABLED        ON
+#   VSQL_METRICS_PROMETHEUS_BIND_ADDRESS   0.0.0.0
+#   VSQL_METRICS_PROMETHEUS_PORT           9104
+#   VSQL_METRICS_PROMETHEUS_AUTH_TOKEN     unset -> no Authorization required
 #
 # The install and the enable live in the datadir, not in this image: a container
 # started against a volume that some earlier image already initialized comes up
@@ -91,7 +101,8 @@ RUN mkdir -p /etc/mysql \
 COPY --chmod=0644 docker/vsql-metrics-init.sh \
      /docker-entrypoint-initdb.d/10-vsql-metrics.sh
 
-# The pull endpoint, when vsql_metrics_otel_exporter_prometheus_enabled is ON.
-# It is off by default and binds 127.0.0.1, so reaching it from outside the
-# container also needs prometheus_bind_address set to 0.0.0.0.
+# The pull endpoint. Documentation only -- nothing consults it -- but under
+# Kubernetes the matching containerPort is worth declaring and worth naming
+# `metrics`, which is what the conventional annotation-free pod scrape job
+# selects on.
 EXPOSE 9104
