@@ -70,13 +70,20 @@ COPY --from=builder --chown=mysql:mysql --chmod=0644 \
 # This extension uses preview capabilities (sql_query, thread_worker, sys_var,
 # status_var), which the server refuses to load unless the flag is on. It cannot
 # be turned on with SET GLOBAL -- only SET PERSIST or a startup option -- so the
-# image sets it here; without it INSTALL EXTENSION fails with ER 3219. The base
-# image ships no my.cnf, and /etc/my.cnf is the first file mysqld reads.
-RUN printf '%s\n' \
+# image sets it here; without it INSTALL EXTENSION fails with ER 3219.
+#
+# /etc/mysql/my.cnf, not /etc/my.cnf, although the base image ships neither.
+# mysqld reads /etc/my.cnf, /etc/mysql/my.cnf, /usr/etc/my.cnf, ~/.my.cnf in that
+# order, and orchestrators that hand the server a config -- the vcloud operator
+# among them -- mount theirs at /etc/my.cnf, which shadows anything the image put
+# there. The second path is left alone by those, and being read later it also
+# wins over a value set in the first.
+RUN mkdir -p /etc/mysql \
+    && printf '%s\n' \
         '[mysqld]' \
         'vsql-allow-preview-extensions=ON' \
-        > /etc/my.cnf \
-    && chmod 0644 /etc/my.cnf
+        > /etc/mysql/my.cnf \
+    && chmod 0644 /etc/mysql/my.cnf
 
 # INSTALL EXTENSION and the enable, run once against an empty datadir. 0644 (not
 # 0755) is deliberate: the entrypoint sources non-executable init scripts, which
