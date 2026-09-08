@@ -59,6 +59,10 @@ constexpr Collector kCollectors[kCollectorCount] = {
     {"perf_schema.tablelocks", "collect_perf_schema_tablelocks", false, &collect_table_locks},
     {"engine_innodb_status", "collect_engine_innodb_status", false, &collect_engine_innodb_status},
     {"binlog_size", "collect_binlog_size", false, &collect_binlog_size},
+    // process and villagesql have no mysqld_exporter counterpart. On by
+    // default: both are a handful of gauges per scrape.
+    {"process", "collect_process", true, &collect_process},
+    {"villagesql", "collect_villagesql", true, &collect_villagesql},
 };
 
 // Nothing but position ties a registry entry to its CollectorIdx, and getting
@@ -77,6 +81,8 @@ static_assert(std::string_view(kCollectors[kEventsStatementsSum].id) ==
                   "perf_schema.eventsstatementssum",
               "kCollectors is out of step with the CollectorIdx enum");
 static_assert(std::string_view(kCollectors[kBinlogSize].id) == "binlog_size",
+              "kCollectors is out of step with the CollectorIdx enum");
+static_assert(std::string_view(kCollectors[kVillageSQL].id) == "villagesql",
               "kCollectors is out of step with the CollectorIdx enum");
 
 // The server truncates a qualified system variable name at 64 characters, and
@@ -132,7 +138,7 @@ int g_listen_fd = -1;
 // kept in step with manifest.json by hand; it names the producer of the
 // metrics, not the server.
 constexpr const char kScopeName[] = "vsql_metrics_otel_exporter";
-constexpr const char kScopeVersion[] = "0.0.1";
+constexpr const char kScopeVersion[] = "0.0.2";
 
 // Used only when a tick fails so badly that the configured interval could not
 // be read. Matches export_interval_ms's own default.

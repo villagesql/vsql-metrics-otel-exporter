@@ -81,6 +81,8 @@ enum CollectorIdx {
   kTableLocks,
   kEngineInnodbStatus,
   kBinlogSize,
+  kProcess,
+  kVillageSQL,
   kCollectorCount
 };
 
@@ -157,6 +159,8 @@ bool collect_file_events(CollectorCtx &ctx);
 bool collect_table_locks(CollectorCtx &ctx);
 bool collect_engine_innodb_status(CollectorCtx &ctx);
 bool collect_binlog_size(CollectorCtx &ctx);
+bool collect_process(CollectorCtx &ctx);
+bool collect_villagesql(CollectorCtx &ctx);
 
 }  // namespace vsql_metrics
 

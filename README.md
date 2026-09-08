@@ -310,6 +310,19 @@ flag name is transliterated with underscores.
 | `--collect.perf_schema.tablelocks` | `collect_perf_schema_tablelocks` | OFF |
 | `--collect.engine_innodb_status` | `collect_engine_innodb_status` | OFF |
 | `--collect.binlog_size` | `collect_binlog_size` | OFF |
+| *(none)* | `collect_process` | **ON** |
+| *(none)* | `collect_villagesql` | **ON** |
+
+`collect_process` and `collect_villagesql` have no mysqld_exporter
+counterpart. `collect_process` emits the server process's own
+`process_resident_memory_bytes`, `process_open_fds` and `process_max_fds`
+gauges (Linux only; elsewhere it emits nothing).
+`collect_villagesql` emits extension-framework state:
+`villagesql_vef_worker_threads` (background threads extensions have running),
+`villagesql_extension_pending_errors` (rows in
+`information_schema.EXTENSIONS` with a non-null `PENDING_LAST_ERROR`), and one
+`villagesql_extension_info{extension_name,extension_version} 1` per installed
+extension.
 
 `collect_perf_schema_stmt_sum` is the one name that is not a direct transliteration: the full
 form is 39 characters, and the server silently truncates a qualified variable name at 64.
@@ -391,7 +404,9 @@ pipeline read access to server state.
   and global query response-time statistics is tracked upstream in
   [villagesql-server#622](https://github.com/villagesql/villagesql-server/issues/622) — 👍 it if
   you want these collectors.
-- **Push, not pull.** No `/metrics` endpoint; a collector must sit between this and Prometheus.
+- **Prometheus can also pull.** OTLP push needs a collector between this and
+  Prometheus; the [Prometheus endpoint](#the-prometheus-endpoint) serves the
+  same metrics for direct scraping.
 - **No retry and no compression.** A failed export is dropped. Cumulative counters self-heal on
   the next tick; gauges lose a sample. Bodies are not gzipped.
 - **Preview APIs.** Requires `vsql_allow_preview_extensions = ON`. These capabilities may change
