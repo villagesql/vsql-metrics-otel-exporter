@@ -31,7 +31,7 @@
 # started against a volume that some earlier image already initialized comes up
 # with the VEB staged but nothing installed. See docker/vsql-metrics-init.sh.
 
-ARG VSQL_IMAGE=villagesql/server:stable
+ARG VSQL_IMAGE=villagesql/server:latest
 
 # ---------------------------------------------------------------------------
 # Builder: the server image already ships the extension SDK (headers under
