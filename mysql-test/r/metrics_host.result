@@ -1,0 +1,27 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+# Host collection defaults to on.
+SELECT VARIABLE_VALUE AS host_default
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_host';
+host_default
+ON
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+# CPU, memory, datadir filesystem and core-file count are exported (1 each).
+1
+1
+1
+1
+#
+# Switched off, the host metrics disappear.
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+0
+0
+#
+# Nothing errored in either phase.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+no_scrape_errors
+1
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

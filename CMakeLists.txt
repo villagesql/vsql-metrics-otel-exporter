@@ -53,6 +53,7 @@ add_library(vsql_metrics_otel_exporter SHARED
     src/collectors/engine_innodb.cc
     src/collectors/binlog.cc
     src/collectors/process.cc
+    src/collectors/host.cc
     src/collectors/villagesql.cc
 )
 target_compile_options(vsql_metrics_otel_exporter PRIVATE -fPIC)

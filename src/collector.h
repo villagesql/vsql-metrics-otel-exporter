@@ -42,6 +42,7 @@ struct ScrapeConfig {
   long long stmt_limit = 0;
   long long stmt_timelimit = 0;
   long long stmt_digest_text_limit = 0;
+  std::string cores_dir;  // empty: villagesql_core_files is not emitted
 };
 
 struct CollectorCtx {
@@ -83,6 +84,7 @@ enum CollectorIdx {
   kBinlogSize,
   kProcess,
   kVillageSQL,
+  kHost,
   kCollectorCount
 };
 
@@ -161,6 +163,7 @@ bool collect_engine_innodb_status(CollectorCtx &ctx);
 bool collect_binlog_size(CollectorCtx &ctx);
 bool collect_process(CollectorCtx &ctx);
 bool collect_villagesql(CollectorCtx &ctx);
+bool collect_host(CollectorCtx &ctx);
 
 }  // namespace vsql_metrics
 

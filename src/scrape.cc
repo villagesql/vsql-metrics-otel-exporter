@@ -63,6 +63,7 @@ constexpr Collector kCollectors[kCollectorCount] = {
     // default: both are a handful of gauges per scrape.
     {"process", "collect_process", true, &collect_process},
     {"villagesql", "collect_villagesql", true, &collect_villagesql},
+    {"host", "collect_host", true, &collect_host},
 };
 
 // Nothing but position ties a registry entry to its CollectorIdx, and getting
@@ -83,6 +84,8 @@ static_assert(std::string_view(kCollectors[kEventsStatementsSum].id) ==
 static_assert(std::string_view(kCollectors[kBinlogSize].id) == "binlog_size",
               "kCollectors is out of step with the CollectorIdx enum");
 static_assert(std::string_view(kCollectors[kVillageSQL].id) == "villagesql",
+              "kCollectors is out of step with the CollectorIdx enum");
+static_assert(std::string_view(kCollectors[kHost].id) == "host",
               "kCollectors is out of step with the CollectorIdx enum");
 
 // The server truncates a qualified system variable name at 64 characters, and
@@ -288,6 +291,7 @@ void collect(struct vef_thread_handle_t *handle, MetricBatch &batch,
   sc.stmt_limit = cfg_int(g_cfg.eventsstatements_limit);
   sc.stmt_timelimit = cfg_int(g_cfg.eventsstatements_timelimit);
   sc.stmt_digest_text_limit = cfg_int(g_cfg.eventsstatements_digest_text_limit);
+  sc.cores_dir = cfg_str("cores_dir");
 
   long long failed_collector = 0;
 

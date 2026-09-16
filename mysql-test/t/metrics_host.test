@@ -1,0 +1,119 @@
+# The host collector reports the machine under the server: CPU, memory, the
+# datadir's filesystem, and the number of files in cores_dir. It reads /proc,
+# so it emits only on Linux; elsewhere it is a silent no-op, which
+# metrics_basic still covers (the variable exists and scrapes do not error).
+
+--source include/not_windows.inc
+--source include/linux.inc
+
+--let $recv_port = 14406
+--let $body_on = $MYSQLTEST_VARDIR/tmp/otlp_host_on.json
+--let $body_off = $MYSQLTEST_VARDIR/tmp/otlp_host_off.json
+--let $recv_py = $MYSQLTEST_VARDIR/tmp/otlp_host_recv.py
+--let $cores_dir = $MYSQLTEST_VARDIR/tmp/otlp_host_cores
+
+--error 0,1
+--remove_file $body_on
+--error 0,1
+--remove_file $body_off
+--error 0,1
+--remove_file $cores_dir/core.1
+--error 0,1
+--rmdir $cores_dir
+--mkdir $cores_dir
+--write_file $cores_dir/core.1
+not a real core
+EOF
+
+# Routes a captured body to a file chosen by the marker it carries, so both
+# phases can be served by one receiver.
+--write_file $recv_py
+import http.server, sys, time
+port = int(sys.argv[1])
+targets = {sys.argv[2]: sys.argv[3], sys.argv[4]: sys.argv[5]}
+deadline = time.time() + 60
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        data = self.rfile.read(n)
+        for marker, path in targets.items():
+            if marker.encode() in data:
+                with open(path, 'wb') as f:
+                    f.write(data)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'{}')
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(('127.0.0.1', port), H)
+srv.timeout = 0.5
+while time.time() < deadline:
+    srv.handle_request()
+EOF
+
+--exec_in_background python3 $recv_py $recv_port vsql_marker_host_on $body_on vsql_marker_host_off $body_off
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $recv_port RECV_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:$recv_port';
+--replace_result $cores_dir CORES_DIR
+eval SET GLOBAL vsql_metrics_otel_exporter.cores_dir = '$cores_dir';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
+SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 1000000;
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_marker_host_on';
+--enable_query_log
+
+--echo # Host collection defaults to on.
+SELECT VARIABLE_VALUE AS host_default
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_host';
+
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_on' ] && break; sleep 0.25; done; true"
+
+--echo # CPU, memory, datadir filesystem and core-file count are exported (1 each).
+--exec sh -c "grep -c '\"name\":\"villagesql_host_cpu_seconds_total\"' $body_on; true"
+--exec sh -c "grep -c '\"name\":\"villagesql_host_memory_available_bytes\"' $body_on; true"
+--exec sh -c "grep -c '\"name\":\"villagesql_host_datadir_fs_avail_bytes\"' $body_on; true"
+--exec sh -c "grep -c '\"name\":\"villagesql_core_files\"' $body_on; true"
+
+--echo #
+--echo # Switched off, the host metrics disappear.
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_marker_host_off';
+SET GLOBAL vsql_metrics_otel_exporter.collect_host = OFF;
+--let $exports_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'`
+--enable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > $exports_before FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_off' ] && break; sleep 0.25; done; true"
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+
+--exec sh -c "grep -c '\"name\":\"villagesql_host_cpu_seconds_total\"' $body_off; true"
+--exec sh -c "grep -c '\"name\":\"villagesql_core_files\"' $body_off; true"
+
+--echo #
+--echo # Nothing errored in either phase.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--remove_file $recv_py
+--remove_file $cores_dir/core.1
+--rmdir $cores_dir
+--error 0,1
+--remove_file $body_on
+--error 0,1
+--remove_file $body_off

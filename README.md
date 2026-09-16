@@ -219,6 +219,7 @@ All variables are prefixed `vsql_metrics_otel_exporter.`.
 | `eventsstatements_limit` | `250` | 1–10000 | Maximum statement digests per scrape |
 | `eventsstatements_timelimit` | `86400` | 1–604800 | Only report digests seen within this many seconds |
 | `eventsstatements_digest_text_limit` | `120` | 1–4096 | Truncate `digest_text` label values |
+| `cores_dir` | *(empty)* | | Directory whose regular files `collect_host` counts as `villagesql_core_files`; empty emits nothing |
 | `prometheus_enabled` | `OFF` | | Serve Prometheus text metrics on `GET /metrics` |
 | `prometheus_port` | `9104` | 1024–65535 | TCP port for the endpoint |
 | `prometheus_bind_address` | `127.0.0.1` | | IPv4 address to bind |
@@ -312,9 +313,10 @@ flag name is transliterated with underscores.
 | `--collect.binlog_size` | `collect_binlog_size` | OFF |
 | *(none)* | `collect_process` | **ON** |
 | *(none)* | `collect_villagesql` | **ON** |
+| *(none)* | `collect_host` | **ON** |
 
-`collect_process` and `collect_villagesql` have no mysqld_exporter
-counterpart. `collect_process` emits the server process's own
+`collect_process`, `collect_villagesql` and `collect_host` have no
+mysqld_exporter counterpart. `collect_process` emits the server process's own
 `process_resident_memory_bytes`, `process_open_fds` and `process_max_fds`
 gauges (Linux only; elsewhere it emits nothing).
 `collect_villagesql` emits extension-framework state:
@@ -323,6 +325,20 @@ gauges (Linux only; elsewhere it emits nothing).
 `information_schema.EXTENSIONS` with a non-null `PENDING_LAST_ERROR`), and one
 `villagesql_extension_info{extension_name,extension_version} 1` per installed
 extension.
+`collect_host` reports the machine the server runs on, read from `/proc`
+(Linux only; elsewhere it emits nothing), so a single-process deployment
+needs no node_exporter beside it: `villagesql_host_cpu_seconds_total{mode}`,
+`villagesql_host_memory_total_bytes`, `villagesql_host_memory_available_bytes`,
+`villagesql_host_swap_total_bytes`, `villagesql_host_swap_free_bytes`, the
+filesystem holding `@@datadir` as `villagesql_host_datadir_fs_size_bytes` and
+`villagesql_host_datadir_fs_avail_bytes`, and that filesystem's block device
+as `villagesql_host_datadir_disk_read_bytes_total{device}`,
+`villagesql_host_datadir_disk_written_bytes_total{device}` and
+`villagesql_host_datadir_disk_io_time_seconds_total{device}` (omitted when
+the datadir has no backing block device, such as overlayfs). When `cores_dir`
+is set, `villagesql_core_files` is the number of regular files in it; point
+it at the directory `kernel.core_pattern` writes to and the restarted server
+reports its own crash.
 
 `collect_perf_schema_stmt_sum` is the one name that is not a direct transliteration: the full
 form is 39 characters, and the server silently truncates a qualified variable name at 64.
