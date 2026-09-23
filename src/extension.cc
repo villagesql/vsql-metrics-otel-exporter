@@ -197,11 +197,10 @@ auto SYS_VARS = sv::make_capability({
                   "Collect VillageSQL extension-framework state",
                   collect_flag(vsql_metrics::kVillageSQL),
                   collect_default(vsql_metrics::kVillageSQL)),
-    sv::make_bool(collect_name(vsql_metrics::kHost),
-                  "Collect host CPU, memory, swap, datadir filesystem and "
-                  "disk I/O, and core files (Linux)",
-                  collect_flag(vsql_metrics::kHost),
-                  collect_default(vsql_metrics::kHost)),
+    sv::make_bool(collect_name(vsql_metrics::kCoreFiles),
+                  "Count regular files in the configured core directory",
+                  collect_flag(vsql_metrics::kCoreFiles),
+                  collect_default(vsql_metrics::kCoreFiles)),
 
     sv::make_int("processlist_min_time",
                  "Only count processlist threads at least this old (seconds)",
@@ -216,7 +215,7 @@ auto SYS_VARS = sv::make_capability({
                  "Truncate digest_text label values to this many characters",
                  &g_eventsstatements_digest_text_limit, 120, 1, 4096),
     sv::make_str("cores_dir",
-                 "Directory whose regular files collect_host counts as "
+                 "Directory whose regular files collect_core_files counts as "
                  "villagesql_core_files (empty: not emitted)",
                  &g_cores_dir, ""),
 });

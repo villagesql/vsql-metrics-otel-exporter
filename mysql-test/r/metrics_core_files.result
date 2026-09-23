@@ -1,0 +1,20 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+SELECT VARIABLE_VALUE AS core_files_default FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_core_files';
+core_files_default
+ON
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+# Empty setting emits no count.
+empty: OK
+# Count files, not directories.
+one: OK
+# An empty directory reports zero.
+zero: OK
+SET GLOBAL vsql_metrics_otel_exporter.collect_core_files = OFF;
+off: OK
+SET GLOBAL vsql_metrics_otel_exporter.collect_core_files = ON;
+# An inaccessible path fails collection instead of reporting zero.
+bad: OK
+SET GLOBAL vsql_metrics_otel_exporter.cores_dir = '';
+empty: OK
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

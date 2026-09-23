@@ -63,7 +63,7 @@ constexpr Collector kCollectors[kCollectorCount] = {
     // default: both are a handful of gauges per scrape.
     {"process", "collect_process", true, &collect_process},
     {"villagesql", "collect_villagesql", true, &collect_villagesql},
-    {"host", "collect_host", true, &collect_host},
+    {"core_files", "collect_core_files", true, &collect_core_files},
 };
 
 // Nothing but position ties a registry entry to its CollectorIdx, and getting
@@ -85,7 +85,7 @@ static_assert(std::string_view(kCollectors[kBinlogSize].id) == "binlog_size",
               "kCollectors is out of step with the CollectorIdx enum");
 static_assert(std::string_view(kCollectors[kVillageSQL].id) == "villagesql",
               "kCollectors is out of step with the CollectorIdx enum");
-static_assert(std::string_view(kCollectors[kHost].id) == "host",
+static_assert(std::string_view(kCollectors[kCoreFiles].id) == "core_files",
               "kCollectors is out of step with the CollectorIdx enum");
 
 // The server truncates a qualified system variable name at 64 characters, and

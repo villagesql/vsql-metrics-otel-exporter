@@ -84,7 +84,7 @@ enum CollectorIdx {
   kBinlogSize,
   kProcess,
   kVillageSQL,
-  kHost,
+  kCoreFiles,
   kCollectorCount
 };
 
@@ -163,7 +163,7 @@ bool collect_engine_innodb_status(CollectorCtx &ctx);
 bool collect_binlog_size(CollectorCtx &ctx);
 bool collect_process(CollectorCtx &ctx);
 bool collect_villagesql(CollectorCtx &ctx);
-bool collect_host(CollectorCtx &ctx);
+bool collect_core_files(CollectorCtx &ctx);
 
 }  // namespace vsql_metrics
 

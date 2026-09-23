@@ -1,0 +1,71 @@
+# Core-file counting uses the filesystem, not Linux host-resource counters.
+--source include/not_windows.inc
+--let $port = 19106
+--let $probe = $MYSQLTEST_VARDIR/tmp/core_probe.py
+--let $cores_dir = $MYSQLTEST_VARDIR/tmp/metrics_cores
+--mkdir $cores_dir
+--mkdir $cores_dir/subdir
+--write_file $cores_dir/core.1
+sample
+EOF
+--write_file $probe
+import sys, urllib.request
+body = urllib.request.urlopen(sys.argv[1], timeout=10).read().decode()
+lines = body.splitlines()
+mode = sys.argv[2]
+values = [line.split()[1] for line in lines if line.startswith("villagesql_core_files ")]
+expected = {"one": ["1"], "zero": ["0"], "empty": [], "off": [], "bad": []}[mode]
+assert values == expected, (mode, values)
+assert not any("villagesql_host_" in line for line in lines)
+assert any(line.startswith("villagesql_vef_worker_threads ") for line in lines)
+assert any(line.startswith("villagesql_extension_pending_errors ") for line in lines)
+if sys.platform.startswith("linux"):
+    for metric in ("process_resident_memory_bytes", "process_open_fds", "process_max_fds"):
+        assert any(line.startswith(metric + " ") for line in lines), metric
+success = 'mysql_exporter_collector_success{collector="core_files"}'
+if mode == "off":
+    assert not any(line.startswith(success) for line in lines)
+else:
+    assert success + (" 0" if mode == "bad" else " 1") in lines
+print(mode + ": OK")
+EOF
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = '';
+eval SET GLOBAL vsql_metrics_otel_exporter.prometheus_port = $port;
+SET GLOBAL vsql_metrics_otel_exporter.prometheus_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+--enable_query_log
+SELECT VARIABLE_VALUE AS core_files_default FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_core_files';
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE = 1 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.prometheus_listening'
+--source include/wait_condition.inc
+
+--echo # Empty setting emits no count.
+--exec python3 $probe http://127.0.0.1:$port/metrics empty
+--disable_query_log
+eval SET GLOBAL vsql_metrics_otel_exporter.cores_dir = '$cores_dir';
+--enable_query_log
+--echo # Count files, not directories.
+--exec python3 $probe http://127.0.0.1:$port/metrics one
+--remove_file $cores_dir/core.1
+--echo # An empty directory reports zero.
+--exec python3 $probe http://127.0.0.1:$port/metrics zero
+SET GLOBAL vsql_metrics_otel_exporter.collect_core_files = OFF;
+--exec python3 $probe http://127.0.0.1:$port/metrics off
+SET GLOBAL vsql_metrics_otel_exporter.collect_core_files = ON;
+--disable_query_log
+eval SET GLOBAL vsql_metrics_otel_exporter.cores_dir = '$cores_dir/missing';
+CALL mtr.add_suppression('collector core_files failed: cannot open cores_dir');
+--enable_query_log
+--echo # An inaccessible path fails collection instead of reporting zero.
+--exec python3 $probe http://127.0.0.1:$port/metrics bad
+SET GLOBAL vsql_metrics_otel_exporter.cores_dir = '';
+--exec python3 $probe http://127.0.0.1:$port/metrics empty
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+--remove_file $probe
+--rmdir $cores_dir/subdir
+--rmdir $cores_dir
