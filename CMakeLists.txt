@@ -39,6 +39,7 @@ add_library(vsql_metrics_otel_exporter SHARED
     src/otlp_json.cc
     src/otlp_http.cc
     src/value_parse.cc
+    src/proc_read.cc
     src/prom_text.cc
     src/http_endpoint.cc
     src/collectors/global_status.cc
@@ -51,6 +52,9 @@ add_library(vsql_metrics_otel_exporter SHARED
     src/collectors/perf_schema_tables.cc
     src/collectors/engine_innodb.cc
     src/collectors/binlog.cc
+    src/collectors/process.cc
+    src/collectors/core_files.cc
+    src/collectors/villagesql.cc
 )
 target_compile_options(vsql_metrics_otel_exporter PRIVATE -fPIC)
 

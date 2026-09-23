@@ -1,0 +1,25 @@
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+# Process collection defaults to on.
+SELECT VARIABLE_VALUE AS process_default
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_process';
+process_default
+ON
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+# RSS, open fds and the fd limit are exported (1 each).
+1
+1
+1
+#
+# Switched off, the process metrics disappear.
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+0
+#
+# Nothing errored in either phase.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+no_scrape_errors
+1
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;

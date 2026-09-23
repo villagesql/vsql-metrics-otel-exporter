@@ -219,6 +219,7 @@ All variables are prefixed `vsql_metrics_otel_exporter.`.
 | `eventsstatements_limit` | `250` | 1–10000 | Maximum statement digests per scrape |
 | `eventsstatements_timelimit` | `86400` | 1–604800 | Only report digests seen within this many seconds |
 | `eventsstatements_digest_text_limit` | `120` | 1–4096 | Truncate `digest_text` label values |
+| `cores_dir` | *(empty)* | | Directory whose regular files `collect_core_files` counts as `villagesql_core_files`; empty emits nothing |
 | `prometheus_enabled` | `OFF` | | Serve Prometheus text metrics on `GET /metrics` |
 | `prometheus_port` | `9104` | 1024–65535 | TCP port for the endpoint |
 | `prometheus_bind_address` | `127.0.0.1` | | IPv4 address to bind |
@@ -310,6 +311,23 @@ flag name is transliterated with underscores.
 | `--collect.perf_schema.tablelocks` | `collect_perf_schema_tablelocks` | OFF |
 | `--collect.engine_innodb_status` | `collect_engine_innodb_status` | OFF |
 | `--collect.binlog_size` | `collect_binlog_size` | OFF |
+| *(none)* | `collect_process` | **ON** |
+| *(none)* | `collect_villagesql` | **ON** |
+| *(none)* | `collect_core_files` | **ON** |
+
+`collect_process`, `collect_villagesql` and `collect_core_files` have no
+mysqld_exporter counterpart. `collect_process` emits the server process's own
+`process_resident_memory_bytes`, `process_open_fds` and `process_max_fds`
+gauges (Linux only; elsewhere it emits nothing).
+`collect_villagesql` emits extension-framework state:
+`villagesql_vef_worker_threads` (background threads extensions have running),
+`villagesql_extension_pending_errors` (rows in
+`information_schema.EXTENSIONS` with a non-null `PENDING_LAST_ERROR`).
+`collect_core_files` counts regular files in `cores_dir` as
+`villagesql_core_files`. An empty path emits no count; an inaccessible configured
+directory fails the collector rather than reporting zero. The count updates
+only while mysqld is running. Use node_exporter separately for host CPU, memory,
+filesystem, and disk-device metrics.
 
 `collect_perf_schema_stmt_sum` is the one name that is not a direct transliteration: the full
 form is 39 characters, and the server silently truncates a qualified variable name at 64.
@@ -391,7 +409,9 @@ pipeline read access to server state.
   and global query response-time statistics is tracked upstream in
   [villagesql-server#622](https://github.com/villagesql/villagesql-server/issues/622) — 👍 it if
   you want these collectors.
-- **Push, not pull.** No `/metrics` endpoint; a collector must sit between this and Prometheus.
+- **Prometheus can also pull.** OTLP push needs a collector between this and
+  Prometheus; the [Prometheus endpoint](#the-prometheus-endpoint) serves the
+  same metrics for direct scraping.
 - **No retry and no compression.** A failed export is dropped. Cumulative counters self-heal on
   the next tick; gauges lose a sample. Bodies are not gzipped.
 - **Preview APIs.** Requires `vsql_allow_preview_extensions = ON`. These capabilities may change

@@ -1,0 +1,112 @@
+# The villagesql collector reports extension-framework state: VEF worker
+# thread count and pending install/upgrade errors. Unlike collect_process,
+# it uses only SQL and emits on
+# every platform. The exporter's own background worker doubles as the test
+# fixture for the thread-count metric.
+
+--source include/not_windows.inc
+
+--let $recv_port = 14406
+--let $body_on = $MYSQLTEST_VARDIR/tmp/otlp_villagesql_on.json
+--let $body_off = $MYSQLTEST_VARDIR/tmp/otlp_villagesql_off.json
+--let $recv_py = $MYSQLTEST_VARDIR/tmp/otlp_villagesql_recv.py
+
+--error 0,1
+--remove_file $body_on
+--error 0,1
+--remove_file $body_off
+
+# Routes a captured body to a file chosen by the marker it carries, so both
+# phases can be served by one receiver.
+--write_file $recv_py
+import http.server, sys, time
+port = int(sys.argv[1])
+targets = {sys.argv[2]: sys.argv[3], sys.argv[4]: sys.argv[5]}
+deadline = time.time() + 60
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        data = self.rfile.read(n)
+        for marker, path in targets.items():
+            if marker.encode() in data:
+                with open(path, 'wb') as f:
+                    f.write(data)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'{}')
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(('127.0.0.1', port), H)
+srv.timeout = 0.5
+while time.time() < deadline:
+    srv.handle_request()
+EOF
+
+--exec_in_background python3 $recv_py $recv_port vsql_marker_vsql_on $body_on vsql_marker_vsql_off $body_off
+
+INSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--disable_query_log
+--replace_result $recv_port RECV_PORT
+eval SET GLOBAL vsql_metrics_otel_exporter.otlp_endpoint = 'http://127.0.0.1:$recv_port';
+SET GLOBAL vsql_metrics_otel_exporter.export_interval_ms = 1000;
+SET GLOBAL vsql_metrics_otel_exporter.http_timeout_secs = 5;
+SET GLOBAL vsql_metrics_otel_exporter.max_datapoints_per_request = 1000000;
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_marker_vsql_on';
+--enable_query_log
+
+--echo # VillageSQL collection defaults to on.
+SELECT VARIABLE_VALUE AS villagesql_default
+  FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.collect_villagesql';
+
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > 0 FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+
+--echo # The exporter's own worker is a VEF worker thread the collector counts.
+SELECT COUNT(*) > 0 AS has_vef_worker FROM performance_schema.threads
+  WHERE name LIKE '%vef_extension_worker%';
+
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_on' ] && break; sleep 0.25; done; true"
+
+--echo # Worker count and pending errors are exported (1 each).
+--exec sh -c "grep -c '\"name\":\"villagesql_vef_worker_threads\"' $body_on; true"
+--exec sh -c "grep -c '\"name\":\"villagesql_extension_pending_errors\"' $body_on; true"
+
+--echo # Nothing is pending an install or upgrade on this server.
+SELECT COUNT(*) AS pending_errors FROM information_schema.extensions
+  WHERE pending_last_error IS NOT NULL;
+
+--echo #
+--echo # Switched off, the villagesql metrics disappear.
+--disable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.service_name = 'vsql_marker_vsql_off';
+SET GLOBAL vsql_metrics_otel_exporter.collect_villagesql = OFF;
+--let $exports_before = `SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'`
+--enable_query_log
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
+--let $wait_timeout = 30
+--let $wait_condition = SELECT VARIABLE_VALUE > $exports_before FROM performance_schema.global_status WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.exports_total'
+--source include/wait_condition.inc
+--exec sh -c "for i in \$(seq 1 80); do [ -s '$body_off' ] && break; sleep 0.25; done; true"
+SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+
+--exec sh -c "grep -c '\"name\":\"villagesql_vef_worker_threads\"' $body_off; true"
+
+--echo #
+--echo # Nothing errored in either phase.
+SELECT VARIABLE_VALUE = 0 AS no_scrape_errors FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'vsql_metrics_otel_exporter.scrape_errors_total';
+
+UNINSTALL EXTENSION vsql_metrics_otel_exporter;
+
+--remove_file $recv_py
+--error 0,1
+--remove_file $body_on
+--error 0,1
+--remove_file $body_off

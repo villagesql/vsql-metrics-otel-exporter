@@ -69,6 +69,7 @@ long long g_processlist_min_time = 0;
 long long g_eventsstatements_limit = 250;
 long long g_eventsstatements_timelimit = 86400;
 long long g_eventsstatements_digest_text_limit = 120;
+char *g_cores_dir = nullptr;
 
 // The collector toggles, their SQL names and their defaults all come from the
 // registry in scrape.cc, so a collector is described in exactly one place.
@@ -188,6 +189,18 @@ auto SYS_VARS = sv::make_capability({
                   "Collect binary log file sizes",
                   collect_flag(vsql_metrics::kBinlogSize),
                   collect_default(vsql_metrics::kBinlogSize)),
+    sv::make_bool(collect_name(vsql_metrics::kProcess),
+                  "Collect the server process's memory and fd gauges (Linux)",
+                  collect_flag(vsql_metrics::kProcess),
+                  collect_default(vsql_metrics::kProcess)),
+    sv::make_bool(collect_name(vsql_metrics::kVillageSQL),
+                  "Collect VillageSQL extension-framework state",
+                  collect_flag(vsql_metrics::kVillageSQL),
+                  collect_default(vsql_metrics::kVillageSQL)),
+    sv::make_bool(collect_name(vsql_metrics::kCoreFiles),
+                  "Count regular files in the configured core directory",
+                  collect_flag(vsql_metrics::kCoreFiles),
+                  collect_default(vsql_metrics::kCoreFiles)),
 
     sv::make_int("processlist_min_time",
                  "Only count processlist threads at least this old (seconds)",
@@ -201,6 +214,10 @@ auto SYS_VARS = sv::make_capability({
     sv::make_int("eventsstatements_digest_text_limit",
                  "Truncate digest_text label values to this many characters",
                  &g_eventsstatements_digest_text_limit, 120, 1, 4096),
+    sv::make_str("cores_dir",
+                 "Directory whose regular files collect_core_files counts as "
+                 "villagesql_core_files (empty: not emitted)",
+                 &g_cores_dir, ""),
 });
 
 // Failure classification is numeric because the SDK has no string status var;
