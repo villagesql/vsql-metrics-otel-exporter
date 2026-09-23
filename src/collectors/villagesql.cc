@@ -14,8 +14,6 @@
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <string>
-
 #include "collector.h"
 
 namespace vsql_metrics {
@@ -28,12 +26,9 @@ constexpr const char kWorkerThreadsQuery[] =
     "SELECT COUNT(*) FROM performance_schema.threads "
     "WHERE name LIKE '%vef_extension_worker%'";
 
-// One row per installed extension. PENDING_LAST_ERROR is set when an
-// install/upgrade got stuck or failed; any non-null value needs a human.
-constexpr const char kExtensionsQuery[] =
-    "SELECT extension_name, extension_version, "
-    "pending_last_error IS NOT NULL "
-    "FROM information_schema.extensions";
+constexpr const char kPendingErrorsQuery[] =
+    "SELECT COUNT(*) FROM information_schema.extensions "
+    "WHERE pending_last_error IS NOT NULL";
 
 }  // namespace
 
@@ -46,17 +41,9 @@ bool collect_villagesql(CollectorCtx &ctx) {
   });
   if (!ok) return false;
 
-  long long pending_errors = 0;
-  ok = query_rows(ctx, kExtensionsQuery, [&](const sq::SqlQuery::Row &row) {
-    ctx.out->gauge_i("villagesql_extension_info", 1,
-                     {{"extension_name", std::string(col_str(row, 0))},
-                      {"extension_version", std::string(col_str(row, 1))}});
-    pending_errors += col_int(row, 2);
+  return query_rows(ctx, kPendingErrorsQuery, [&](const sq::SqlQuery::Row &row) {
+    ctx.out->gauge_i("villagesql_extension_pending_errors", col_int(row, 0));
   });
-  if (!ok) return false;
-
-  ctx.out->gauge_i("villagesql_extension_pending_errors", pending_errors);
-  return true;
 }
 
 }  // namespace vsql_metrics

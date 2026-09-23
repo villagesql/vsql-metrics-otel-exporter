@@ -12,8 +12,7 @@ WHERE name LIKE '%vef_extension_worker%';
 has_vef_worker
 1
 SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
-# Worker count, pending errors, and per-extension info are exported (1 each).
-1
+# Worker count and pending errors are exported (1 each).
 1
 1
 # Nothing is pending an install or upgrade on this server.

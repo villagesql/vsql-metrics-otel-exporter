@@ -322,9 +322,7 @@ gauges (Linux only; elsewhere it emits nothing).
 `collect_villagesql` emits extension-framework state:
 `villagesql_vef_worker_threads` (background threads extensions have running),
 `villagesql_extension_pending_errors` (rows in
-`information_schema.EXTENSIONS` with a non-null `PENDING_LAST_ERROR`), and one
-`villagesql_extension_info{extension_name,extension_version} 1` per installed
-extension.
+`information_schema.EXTENSIONS` with a non-null `PENDING_LAST_ERROR`).
 `collect_core_files` counts regular files in `cores_dir` as
 `villagesql_core_files`. An empty path emits no count; an inaccessible configured
 directory fails the collector rather than reporting zero. The count updates
