@@ -59,6 +59,10 @@ print(1 if "# TYPE mysql_global_status_commands_total counter" in exact else 0)
 # counters beside them really do accumulate.
 print(1 if "# TYPE mysql_info_schema_innodb_cmpmem_pages_used_total gauge" in exact else 0)
 print(1 if "# TYPE mysql_info_schema_innodb_cmpmem_relocation_ops_total counter" in exact else 0)
+# VillageSQL's own status variables carry no upstream name to match, but the
+# typing still has to be right: the ones named in collect_villagesql's counter
+# list must come out as counters, not as the gauge the fallback would give.
+print(1 if "# TYPE villagesql_veb_cache_repaired_total counter" in exact else 0)
 # A repeated TYPE line for one metric name makes a scraper reject the body.
 print(len(types) - len(set(types)))
 # Every sample line must parse as name[{labels}] <number>.

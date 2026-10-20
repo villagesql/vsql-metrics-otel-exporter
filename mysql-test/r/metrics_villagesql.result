@@ -20,10 +20,18 @@ SELECT COUNT(*) AS pending_errors FROM information_schema.extensions
 WHERE pending_last_error IS NOT NULL;
 pending_errors
 0
+# The server's own Villagesql_* status variables are exported too (1).
+1
+# And not a second time under a mysql_global_status_ name (0), which
+# collect_global_status would otherwise emit from its gauge fallback.
+0
+# collect_global_status is on, so its own metrics are present (1).
+1
 #
 # Switched off, the villagesql metrics disappear.
 SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
+0
 0
 #
 # Nothing errored in either phase.

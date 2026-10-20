@@ -82,6 +82,16 @@ SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 SELECT COUNT(*) AS pending_errors FROM information_schema.extensions
   WHERE pending_last_error IS NOT NULL;
 
+--echo # The server's own Villagesql_* status variables are exported too (1).
+--exec sh -c "grep -c '\"name\":\"villagesql_veb_cache_repaired_total\"' $body_on; true"
+
+--echo # And not a second time under a mysql_global_status_ name (0), which
+--echo # collect_global_status would otherwise emit from its gauge fallback.
+--exec sh -c "grep -c 'mysql_global_status_villagesql' $body_on; true"
+
+--echo # collect_global_status is on, so its own metrics are present (1).
+--exec sh -c "grep -c '\"name\":\"mysql_global_status_commands_total\"' $body_on; true"
+
 --echo #
 --echo # Switched off, the villagesql metrics disappear.
 --disable_query_log
@@ -97,6 +107,7 @@ SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = ON;
 SET GLOBAL vsql_metrics_otel_exporter.scrape_enabled = OFF;
 
 --exec sh -c "grep -c '\"name\":\"villagesql_vef_worker_threads\"' $body_off; true"
+--exec sh -c "grep -c '\"name\":\"villagesql_veb_cache_repaired_total\"' $body_off; true"
 
 --echo #
 --echo # Nothing errored in either phase.

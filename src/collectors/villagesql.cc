@@ -14,7 +14,11 @@
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <string>
+#include <string_view>
+
 #include "collector.h"
+#include "value_parse.h"
 
 namespace vsql_metrics {
 namespace {
@@ -30,19 +34,57 @@ constexpr const char kPendingErrorsQuery[] =
     "SELECT COUNT(*) FROM information_schema.extensions "
     "WHERE pending_last_error IS NOT NULL";
 
+// Every status variable under the Villagesql_ prefix. Matching the prefix
+// rather than a list of names means a gauge added server-side is picked up
+// with no change here; a counter still needs a line in kCounters below. The
+// underscore is a LIKE wildcard, hence the escape.
+constexpr const char kStatusVarQuery[] =
+    "SHOW GLOBAL STATUS LIKE 'Villagesql\\_%'";
+
+// Monotonic counters that take Kind::kSum and the _total suffix upstream gives
+// counters. The list is opt-in because a gauge wrongly typed as a sum is the
+// worse error: every decrease then reads downstream as a counter reset,
+// whereas a counter left as a gauge only loses rate semantics.
+//
+// Entries are the sanitized name, so the server's Villagesql_veb_cache_repaired
+// is matched as villagesql_veb_cache_repaired and emitted with _total.
+constexpr std::string_view kCounters[] = {
+    "villagesql_veb_cache_repaired",
+};
+
 }  // namespace
 
-// VillageSQL extension-framework state, which no mysqld_exporter collector can
-// see. These have no upstream equivalent, so the names carry a villagesql_
-// prefix rather than mysql_.
+// VillageSQL's own metrics, which no mysqld_exporter collector can see: VEF
+// framework state, plus the global status variables the server registers
+// under the Villagesql_ prefix. These have no upstream equivalent, so the
+// names carry a villagesql_ prefix rather than mysql_.
 bool collect_villagesql(CollectorCtx &ctx) {
   bool ok = query_rows(ctx, kWorkerThreadsQuery, [&](const sq::SqlQuery::Row &row) {
     ctx.out->gauge_i("villagesql_vef_worker_threads", col_int(row, 0));
   });
   if (!ok) return false;
 
-  return query_rows(ctx, kPendingErrorsQuery, [&](const sq::SqlQuery::Row &row) {
+  ok = query_rows(ctx, kPendingErrorsQuery, [&](const sq::SqlQuery::Row &row) {
     ctx.out->gauge_i("villagesql_extension_pending_errors", col_int(row, 0));
+  });
+  if (!ok) return false;
+
+  // A server without these variables returns no rows and emits nothing, which
+  // is what keeps this collector working against one that predates them.
+  return query_rows(ctx, kStatusVarQuery, [&](const sq::SqlQuery::Row &row) {
+    const std::string name = valid_prometheus_name(col_str(row, 0));
+    if (name.empty()) return;
+
+    double value = 0.0;
+    if (!parse_status_value(col_str(row, 1), &value)) return;
+
+    for (const std::string_view counter : kCounters) {
+      if (name == counter) {
+        ctx.out->counter_i(name + "_total", static_cast<long long>(value));
+        return;
+      }
+    }
+    ctx.out->gauge_d(name, value);
   });
 }
 
