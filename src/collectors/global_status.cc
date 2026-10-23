@@ -50,6 +50,12 @@ constexpr PrefixRule kPrefixRules[] = {
 // Routes one lowercased status key to its metric. Mirrors the switch in
 // mysqld_exporter's global_status.go.
 void emit(MetricBatch &out, const std::string &key, double value) {
+  // VillageSQL's own status variables are reported by collect_villagesql,
+  // which types the counters among them as sums and names them villagesql_*.
+  // Letting them also fall through to the gauge default below would publish a
+  // second series per counter under a mysql_ name that upstream never emits.
+  if (!strip_prefix(key, "villagesql_").empty()) return;
+
   for (const PrefixRule &rule : kPrefixRules) {
     const std::string_view suffix = strip_prefix(key, rule.prefix);
     if (suffix.empty()) continue;
